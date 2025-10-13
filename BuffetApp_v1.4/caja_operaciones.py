@@ -49,18 +49,19 @@ class DetalleCajaFrame(tk.Frame):
         self.kpis_row2.pack(fill='x', pady=(6,10))
         
     def create_kpi(self, parent, icon, title, value, bg_color, fg_color):
-        # use larger fonts for KPI icons/titles to improve readability on tablets
+        # Ajuste: reducir ligeramente la tipografía para KPIs del detalle
         kpi_padx = 12
         kpi_pady = 8
         f = tk.Frame(parent, bg=bg_color, padx=kpi_padx, pady=kpi_pady)
         f.pack(side='left', padx=5)
-        # icon + title: use a slightly larger font
         try:
-            title_font = (FONTS['normal'][0], max(FONTS['normal'][1] + 2, 14))
+            # Título un poco más chico que antes
+            title_font = (FONTS['normal'][0], max(FONTS['normal'][1] + 0, 12))
         except Exception:
             title_font = FONTS['normal']
         try:
-            value_font = (FONTS['bold'][0], max(FONTS['bold'][1] + 4, 16), 'bold')
+            # Valor también reducido respecto al anterior
+            value_font = (FONTS['bold'][0], max(FONTS['bold'][1] + 2, 14), 'bold')
         except Exception:
             value_font = FONTS['bold']
         # Try to load a PNG icon from img/ when icon is a known key (like 'emitidos', 'anulados', 'ventas_totales', 'ingresos', 'retiros')

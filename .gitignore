@@ -6528,3 +6528,5 @@ dist/BuffetApp/_internal/yapf_third_party/yapf_diff/LICENSE
 dist/BuffetApp/_internal/zmq/backend/cython/_zmq.cp311-win_amd64.pyd
 .vscode/tasks.json
 BuffetApp_v1.4.zip
+BuffetApp_v1.4/__pycache__/app_config.cpython-311.pyc
+BuffetApp_v1.4/__pycache__/sync_utils.cpython-311.pyc
