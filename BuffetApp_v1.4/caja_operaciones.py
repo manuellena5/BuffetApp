@@ -1578,8 +1578,13 @@ class DetalleCajaFrame(tk.Frame):
                             if sys.platform.startswith('win'):
                                 try:
                                     import win32print
-                                    # Obtener impresora por defecto
-                                    printer_name = win32print.GetDefaultPrinter()
+                                    # Resolver impresora seleccionada o predeterminada
+                                    try:
+                                        from app_config import get_printer_name
+                                        sel = get_printer_name()
+                                        printer_name = sel if sel else win32print.GetDefaultPrinter()
+                                    except Exception:
+                                        printer_name = win32print.GetDefaultPrinter()
                                     hPrinter = win32print.OpenPrinter(printer_name)
                                     try:
                                         # Preparar texto del ticket como bytes; al final añadiremos

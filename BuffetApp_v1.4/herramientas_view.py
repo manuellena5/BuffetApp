@@ -4,11 +4,14 @@ import shutil
 import datetime
 import tkinter as tk
 from tkinter import messagebox
-from theme import themed_button, apply_button_style, COLORS
+from theme import themed_button, apply_button_style, COLORS, format_currency
 from tkinter import filedialog
 from tkinter import ttk
 from db_utils import get_connection
-from app_config import get_device_id, get_device_name, set_device_name, set_device_id
+from app_config import (
+    get_device_id, get_device_name, set_device_name, set_device_id,
+    get_printer_name, set_printer_name,
+)
 from sync_utils import import_from_db
 from utils_paths import DB_PATH, appdata_dir
 
@@ -18,6 +21,7 @@ class HerramientasView:
     def __init__(self, parent):
         self.parent = parent
         # Sin Google Drive: todo lo relacionado fue removido.
+        self._printers_cached = []
 
     def abrir_backup_window(self, root):
         backup_win = tk.Toplevel(root)
@@ -122,6 +126,51 @@ class HerramientasView:
                     listbox.insert(0, fn)
         except Exception:
             pass
+
+    def abrir_impresora_window(self, root):
+        """Ventana de configuración de impresora: elegir y probar."""
+        win = tk.Toplevel(root)
+        win.title("Config. Impresora")
+        try:
+            win.update_idletasks()
+            w, h = 1000, 420
+            sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+            x = max(0, (sw // 2) - (w // 2))
+            y = max(0, (sh // 2) - (h // 2))
+            win.geometry(f"{w}x{h}+{x}+{y}")
+        except Exception:
+            win.geometry("1000x420")
+        win.transient(root)
+        win.grab_set()
+
+        frm_prn = tk.LabelFrame(win, text="Impresora del sistema")
+        frm_prn.pack(fill=tk.X, padx=12, pady=12)
+        tk.Label(frm_prn, text="Seleccionar impresora:").grid(row=0, column=0, sticky="w", padx=6, pady=6)
+        self.var_printer = tk.StringVar(value=get_printer_name() or "")
+        self.combo_printers = ttk.Combobox(frm_prn, textvariable=self.var_printer, state="readonly", width=60)
+        self.combo_printers.grid(row=0, column=1, sticky="we", padx=6, pady=6)
+        frm_prn.columnconfigure(1, weight=1)
+        self.combo_printers.bind('<<ComboboxSelected>>', self._on_printer_selected)
+        ttk.Button(frm_prn, text="Actualizar lista", command=self._refresh_printers).grid(row=0, column=2, sticky="w", padx=6, pady=6)
+        ttk.Button(frm_prn, text="Guardar selección", command=self._save_printer).grid(row=0, column=3, sticky="w", padx=6, pady=6)
+        ttk.Button(frm_prn, text="Usar predeterminada", command=self._clear_printer).grid(row=0, column=4, sticky="w", padx=6, pady=6)
+
+        # Info de impresora actual y predeterminada
+        info_frame = tk.Frame(win)
+        info_frame.pack(fill=tk.X, padx=12, pady=(4, 10))
+        self.var_printer_info = tk.StringVar(value="")
+        lbl_info = tk.Label(info_frame, textvariable=self.var_printer_info, anchor="w", justify="left")
+        lbl_info.pack(fill=tk.X)
+
+        # Acción de prueba
+        btns = tk.Frame(win)
+        btns.pack(fill=tk.X, padx=12, pady=8)
+        ttk.Button(btns, text="Test Ticket de Venta", command=self.test_ticket_venta).pack(side=tk.LEFT, padx=(0,8))
+        ttk.Button(btns, text="Test Cierre de Caja", command=self.test_ticket_cierre).pack(side=tk.LEFT)
+
+        # Inicial
+        self._refresh_printers()
+        self._update_printer_info()
 
     def abrir_pos_window(self, root):
         """Ventana para ver datos del POS y gestionar cajas predeterminadas."""
@@ -491,47 +540,310 @@ class HerramientasView:
 
     # Funcionalidad de Google Drive eliminada por pedido del usuario.
 
-    def test_impresora(self):
+    def _resolve_printer_name(self) -> str:
+        """Devuelve la impresora a usar: seleccionada en config o la predeterminada del sistema."""
+        try:
+            sel = get_printer_name()
+            if sel:
+                return sel
+        except Exception:
+            pass
+        try:
+            import win32print
+            return win32print.GetDefaultPrinter()
+        except Exception:
+            # Fallback: cadena vacía provocará error manejado más abajo
+            return ""
+
+    def _refresh_printers(self):
+        try:
+            import win32print
+            flags = 2  # PRINTER_ENUM_LOCAL
+            self._printers_cached = [name for (flags, desc, name, comment) in win32print.EnumPrinters(flags)]
+        except Exception:
+            self._printers_cached = []
+        vals = [p for p in self._printers_cached]
+        if not vals:
+            vals = []
+        self.combo_printers['values'] = vals
+        # Selección actual si existe
+        cur = get_printer_name()
+        if cur and cur in vals:
+            self.combo_printers.set(cur)
+        elif cur:
+            # mantener texto aunque no esté en la lista (impresora desconectada)
+            self.combo_printers.set(cur)
+        else:
             try:
                 import win32print
-                import win32ui
-                printer_name = win32print.GetDefaultPrinter()
+                self.combo_printers.set(win32print.GetDefaultPrinter())
+            except Exception:
+                self.combo_printers.set("")
+        # Actualizar info
+        self._update_printer_info()
+
+    def _save_printer(self):
+        name = (self.var_printer.get() or "").strip()
+        if not name:
+            messagebox.showinfo("Impresora", "No hay selección. Se usará la predeterminada del sistema.")
+            set_printer_name(None)
+            return
+        set_printer_name(name)
+        messagebox.showinfo("Impresora", f"Impresora guardada: {name}")
+        self._update_printer_info()
+
+    def _clear_printer(self):
+        set_printer_name(None)
+        self._refresh_printers()
+        messagebox.showinfo("Impresora", "Se usará la impresora predeterminada de Windows.")
+        self._update_printer_info()
+
+    def _update_printer_info(self):
+        """Actualiza label con impresora seleccionada y predeterminada de Windows."""
+        try:
+            sel = get_printer_name()
+        except Exception:
+            sel = None
+        try:
+            import win32print
+            default = win32print.GetDefaultPrinter()
+        except Exception:
+            default = "(No disponible)"
+        # Estado
+        status_txt = "Desconocido"
+        try:
+            name_for_status = sel or default
+            if name_for_status:
+                ok, stat = self._get_printer_status(name_for_status)
+                status_txt = ("Online" if ok else "Offline/Error") + (f" ({stat})" if stat else "")
+        except Exception:
+            pass
+        texto = ""
+        if sel:
+            texto += f"Seleccionada: {sel}\n"
+        else:
+            texto += "Seleccionada: (Usando predeterminada del sistema)\n"
+        texto += f"Predeterminada de Windows: {default}\n"
+        texto += f"Estado actual: {status_txt}"
+        try:
+            self.var_printer_info.set(texto)
+        except Exception:
+            pass
+
+    def _get_printer_status(self, printer_name: str):
+        try:
+            import win32print
+            hPrinter = win32print.OpenPrinter(printer_name)
+            try:
+                info = win32print.GetPrinter(hPrinter, 2)
+                status = info.get('Status', 0)
+                PRINTER_STATUS_OFFLINE = 0x00000080
+                PRINTER_STATUS_ERROR = 0x00000002
+                PRINTER_STATUS_NOT_AVAILABLE = 0x00001000
+                ok = not (status & (PRINTER_STATUS_OFFLINE | PRINTER_STATUS_ERROR | PRINTER_STATUS_NOT_AVAILABLE))
+                return ok, status
+            finally:
                 try:
-                    hPrinter = win32print.OpenPrinter(printer_name)
-                    printer_info = win32print.GetPrinter(hPrinter, 2)
-                    status = printer_info['Status']
-                    PRINTER_STATUS_OFFLINE = 0x00000080
-                    PRINTER_STATUS_ERROR = 0x00000002
-                    PRINTER_STATUS_NOT_AVAILABLE = 0x00001000
-                    if status & PRINTER_STATUS_OFFLINE or status & PRINTER_STATUS_ERROR or status & PRINTER_STATUS_NOT_AVAILABLE:
-                        win32print.ClosePrinter(hPrinter)
-                        messagebox.showerror("Estado de impresora", f"La impresora '{printer_name}' está offline, en error o no disponible.\n\nVerifica la conexión y el estado.")
-                        return
                     win32print.ClosePrinter(hPrinter)
-                except Exception as e:
-                    messagebox.showerror("Estado de impresora", f"No se pudo obtener el estado de la impresora: {printer_name}\n\nDetalle: {e}")
+                except Exception:
+                    pass
+        except Exception:
+            return False, None
+
+    def _on_printer_selected(self, event=None):
+        # Refrescar texto con selección actual del combo (sin requerir guardar)
+        try:
+            self._update_printer_info()
+        except Exception:
+            pass
+
+    def test_impresora(self):
+            try:
+                import win32print, win32ui, win32con
+                printer_name = self._resolve_printer_name()
+                # Estado
+                ok, _ = self._get_printer_status(printer_name)
+                if not ok:
+                    messagebox.showerror("Estado de impresora", f"La impresora '{printer_name}' está offline, en error o no disponible.\n\nVerifica la conexión y el estado.")
                     return
+                # 1) Ticket de venta de ejemplo (similar a Ventas)
                 pdc = None
                 try:
                     pdc = win32ui.CreateDC()
                     pdc.CreatePrinterDC(printer_name)
-                    pdc.StartDoc("Test Impresora")
+                    pdc.StartDoc("Test - Ticket de Venta")
                     pdc.StartPage()
-                    y = 100
-                    pdc.TextOut(200, y, "TEST IMPRESORA")
-                    y += 50
-                    pdc.TextOut(200, y, "Si ves esto, la impresora funciona.")
-                    pdc.EndPage()
-                    pdc.EndDoc()
-                    messagebox.showinfo("Test Impresora", f"Se envió una página de prueba a: {printer_name}")
-                except Exception as e:
-                    messagebox.showerror("Error de impresión", f"No se pudo imprimir en la impresora: {printer_name}\n\nVerifica que esté conectada y encendida.\n\nDetalle: {e}")
+                    ANCHO_PX = 520
+                    GAP = 2
+                    TITLE_H = 40
+                    META_H = 24
+                    ITEM_BOX_H = 76
+                    def center_x(text):
+                        w, _ = pdc.GetTextExtent(text)
+                        return max(0, (ANCHO_PX - w) // 2)
+                    font_title = win32ui.CreateFont({"name": "Arial", "height": TITLE_H, "weight": 700, "charset": win32con.ANSI_CHARSET})
+                    font_meta  = win32ui.CreateFont({"name": "Arial", "height": META_H,   "weight": 400, "charset": win32con.ANSI_CHARSET})
+                    y = 0
+                    pdc.SelectObject(font_title)
+                    pdc.TextOut(center_x("BUFFET"), y, "BUFFET"); y += TITLE_H + GAP
+                    pdc.SelectObject(font_meta)
+                    pdc.TextOut(center_x("Nº 0001-000123"), y, "Nº 0001-000123"); y += META_H + GAP
+                    from datetime import datetime
+                    fh = datetime.now().strftime("%Y-%m-%d %H:%M")
+                    pdc.TextOut(center_x(fh), y, fh); y += META_H + GAP
+                    pdc.TextOut(center_x("Caja A01"), y, "Caja A01"); y += META_H + GAP
+                    # Item grande
+                    item_text = "HAMBURGUESA"
+                    tam = 86
+                    while True:
+                        font_item_big = win32ui.CreateFont({"name": "Arial", "height": tam, "weight": 700, "charset": win32con.ANSI_CHARSET})
+                        pdc.SelectObject(font_item_big)
+                        w, h = pdc.GetTextExtent(item_text)
+                        if (w <= ANCHO_PX - 8) and (h <= ITEM_BOX_H - 4) and tam >= 36:
+                            break
+                        tam -= 4
+                        if tam < 36:
+                            break
+                    pdc.SelectObject(font_item_big)
+                    y_item = y + max(0, (ITEM_BOX_H - pdc.GetTextExtent(item_text)[1]) // 2)
+                    pdc.TextOut(center_x(item_text), y_item, item_text)
+                    pdc.EndPage(); pdc.EndDoc()
                 finally:
                     if pdc:
                         try:
                             pdc.DeleteDC()
                         except Exception:
                             pass
+                messagebox.showinfo("Test Impresora", f"Se envió el ticket de venta de prueba a: {printer_name}")
             except Exception as e:
-                messagebox.showerror("Error de impresión", f"No se pudo obtener la impresora predeterminada.\n\nDetalle: {e}")
+                messagebox.showerror("Error de impresión", f"No se pudo realizar la prueba de impresión.\n\nDetalle: {e}")
+
+    def test_ticket_venta(self):
+        """Imprime un ticket de venta de ejemplo con el layout utilizado en ventas."""
+        self.test_impresora()
+
+    def test_ticket_cierre(self):
+        """Imprime un ticket de cierre de caja de ejemplo en modo RAW (ESC/POS) con el mismo layout que el cierre real."""
+        try:
+            import win32print, win32ui, win32con
+            printer_name = self._resolve_printer_name()
+            ok, _ = self._get_printer_status(printer_name)
+            if not ok:
+                messagebox.showerror("Estado de impresora", f"La impresora '{printer_name}' está offline, en error o no disponible.\n\nVerifica la conexión y el estado.")
+                return
+            import datetime as _dt
+            # Construir texto usando el mismo patrón que caja_operaciones._imprimir_ticket
+            W = 40  # ancho fijo del ticket
+            now = _dt.datetime.now()
+            fecha = now.strftime("%Y-%m-%d")
+            hora = now.strftime("%H:%M")
+            # Valores de ejemplo (alineados a la lógica real)
+            codigo_caja = "A01"
+            usuario_apertura = "cajero"
+            usuario_cierre = "cajero"
+            disciplina = "General"
+            fondo_inicial = 2000
+            conteo_final = 7950
+            transferencias = 4345
+            ingresos = 500
+            retiros = 200
+            total_general = 12345
+            diferencia = conteo_final + transferencias - (fondo_inicial + total_general + ingresos - retiros)
+            ticket_lines = []
+            ticket_lines.append("=" * W)
+            ticket_lines.append("CIERRE DE CAJA".center(W))
+            ticket_lines.append("=" * W)
+            ticket_lines.append(f"Codigo caja: {codigo_caja}")
+            ticket_lines.append(f"Fecha apertura: {fecha} {hora}")
+            ticket_lines.append(f"Usuario apertura: {usuario_apertura}")
+            ticket_lines.append(f"Disciplina: {disciplina}")
+            ticket_lines.append(f"Fecha cierre: {fecha} {hora}")
+            ticket_lines.append(f"Usuario cierre: {usuario_cierre}")
+            ticket_lines.append("-" * W)
+            ticket_lines.append("TOTALES POR MEDIO DE PAGO")
+            ticket_lines.append("-" * W)
+            # ejemplos de medios de pago
+            ticket_lines.append(f"Efectivo: {format_currency(total_general - transferencias)}")
+            ticket_lines.append(f"Transferencia: {format_currency(transferencias)}")
+            ticket_lines.append("-" * W)
+            ticket_lines.append(f"TOTAL: {format_currency(total_general)}")
+            ticket_lines.append("-" * W)
+            ticket_lines.append(f"Fondo inicial: {format_currency(fondo_inicial)}")
+            ticket_lines.append(f"Conteo final: {format_currency(conteo_final)}")
+            ticket_lines.append(f"Transferencias: {format_currency(transferencias)}")
+            ticket_lines.append(f"Ingresos: {format_currency(ingresos)}")
+            ticket_lines.append(f"Retiros: {format_currency(-abs(float(retiros)))}")
+            ticket_lines.append(f"Diferencia: {format_currency(diferencia, include_sign=True)}")
+            ticket_lines.append(f"Tickets anulados: 2")
+            ticket_lines.append("=" * W)
+            ticket_lines.append("ITEMS VENDIDOS:")
+            ticket_lines.append("(Producto x Cant) = Monto Total")
+            ticket_lines.append("-" * W)
+            ticket_lines.append(f"(Hamburguesa x 3) = {format_currency(4500)}")
+            ticket_lines.append(f"(Gaseosa x 5) = {format_currency(3500)}")
+            ticket_lines.append(f"(Papas x 2) = {format_currency(1200)}")
+            text = "\n".join(ticket_lines) + "\n\n"
+            # Detectar impresoras tipo PDF (usar GDI para que abra el diálogo y renderice texto correctamente)
+            is_pdf = False
+            try:
+                h = win32print.OpenPrinter(printer_name)
+                try:
+                    info = win32print.GetPrinter(h, 2)
+                    driver = (info.get('pDriverName') or info.get('DriverName') or "").lower()
+                    is_pdf = ('pdf' in printer_name.lower()) or ('pdf' in driver)
+                finally:
+                    win32print.ClosePrinter(h)
+            except Exception:
+                is_pdf = ('pdf' in printer_name.lower())
+
+            if is_pdf:
+                # GDI: imprimir líneas monoespaciadas para respetar layout 40 columnas
+                pdc = None
+                try:
+                    pdc = win32ui.CreateDC()
+                    pdc.CreatePrinterDC(printer_name)
+                    pdc.StartDoc("Test - Cierre de Caja")
+                    pdc.StartPage()
+                    # Monoespaciada para 40-col
+                    font = win32ui.CreateFont({"name": "Courier New", "height": 24, "weight": 400, "charset": win32con.ANSI_CHARSET})
+                    pdc.SelectObject(font)
+                    x = 40  # margen izquierdo
+                    y = 60
+                    line_h = 28
+                    for line in ticket_lines:
+                        pdc.TextOut(x, y, line)
+                        y += line_h
+                    pdc.EndPage(); pdc.EndDoc()
+                    messagebox.showinfo("Test Impresora", f"Se envió el ticket de cierre de prueba a: {printer_name}")
+                except Exception as e:
+                    messagebox.showerror("Test Impresora", f"Error al imprimir ticket de cierre (GDI): {e}")
+                finally:
+                    if pdc:
+                        try:
+                            pdc.DeleteDC()
+                        except Exception:
+                            pass
+            else:
+                # RAW para POS/ESC-POS
+                try:
+                    data = text.encode('cp437', errors='replace')
+                except Exception:
+                    data = text.encode('cp1252', errors='replace')
+                try:
+                    hPrinter = win32print.OpenPrinter(printer_name)
+                    try:
+                        win32print.StartDocPrinter(hPrinter, 1, ("Test - Cierre de Caja", None, "RAW"))
+                        win32print.StartPagePrinter(hPrinter)
+                        win32print.WritePrinter(hPrinter, data)
+                        # corte parcial
+                        win32print.WritePrinter(hPrinter, b"\x1dV\x00")
+                        win32print.EndPagePrinter(hPrinter)
+                        win32print.EndDocPrinter(hPrinter)
+                    finally:
+                        win32print.ClosePrinter(hPrinter)
+                    messagebox.showinfo("Test Impresora", f"Se envió el ticket de cierre de prueba a: {printer_name}")
+                except Exception as e:
+                    messagebox.showerror("Test Impresora", f"Error al imprimir ticket de cierre (RAW): {e}")
+        except Exception as e:
+            messagebox.showerror("Error de impresión", f"No se pudo realizar la prueba de cierre.\n\nDetalle: {e}")
     

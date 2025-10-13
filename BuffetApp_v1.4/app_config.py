@@ -20,6 +20,7 @@ DEFAULTS: Dict[str, Any] = {
     "color_boton": "#f0f0f0",
     "fuente_boton": "Arial",
     "lenguaje": "es",
+    "printer_name": None,
 }
 
 
@@ -91,3 +92,17 @@ def set_device_id(new_id: str) -> None:
         if not new_id:
             raise ValueError("device_id no puede ser vacío")
     save_config({"device_id": new_id})
+
+
+# -------- Impresora seleccionada ---------
+def get_printer_name() -> str | None:
+    """Devuelve el nombre de la impresora configurada por el usuario, o None si no hay selección.
+
+    Nota: si es None, se debe usar la impresora predeterminada de Windows.
+    """
+    return get_config().get("printer_name")
+
+
+def set_printer_name(name: str | None) -> None:
+    """Guarda el nombre de la impresora seleccionada. Pasar None para limpiar y usar la predeterminada del sistema."""
+    save_config({"printer_name": name})

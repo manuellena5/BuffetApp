@@ -84,8 +84,9 @@ class BarCanchaApp:
         self.herramientas_view = HerramientasView(self)
         self.herramientas_menu = tk.Menu(self.menu_bar, tearoff=0)
         # Usar el método de instancia para permitir dependencias internas
+        # Configuración de impresora (nueva ventana)
         self.herramientas_menu.add_command(
-            label="Test Impresora", command=self.herramientas_view.test_impresora, state=tk.DISABLED
+            label="Config. Impresora", command=lambda: self.herramientas_view.abrir_impresora_window(self.root), state=tk.DISABLED
         )
         # (Eliminado) Opción de backup local directo: se centraliza en "Backups y Sincronización"
         # Abrir gestión de backups locales, importación desde .db y POS
@@ -166,8 +167,8 @@ class BarCanchaApp:
         self.menu_bar.entryconfig("Ventas", state=tk.NORMAL)
         self.menu_bar.entryconfig("Historial ventas", state=tk.NORMAL)
         self.menu_bar.entryconfig("Productos", state=tk.NORMAL)
-        self.herramientas_menu.entryconfig("Test Impresora", state=tk.NORMAL)
-    # (Eliminado) habilitación de "Backup local (AppData)"
+        self.herramientas_menu.entryconfig("Config. Impresora", state=tk.NORMAL)
+        # (Eliminado) habilitación de "Backup local (AppData)"
         self.herramientas_menu.entryconfig("Backups y Sincronización", state=tk.NORMAL)
 
 
