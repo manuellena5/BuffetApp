@@ -41,15 +41,22 @@ jobs:
       - name: Build with PyInstaller (onedir)
         shell: pwsh
         run: |
-          $iconArg = ""
-          if (Test-Path "BuffetApp\img\app.ico") { $iconArg = "--icon BuffetApp\img\app.ico" }
-          if (Test-Path "assets\app.ico") { $iconArg = "--icon assets\app.ico" }
+          $iconPath = ""
+          if (Test-Path "BuffetApp\\img\\app.ico") { $iconPath = "BuffetApp\\img\\app.ico" }
+          elseif (Test-Path "assets\\app.ico") { $iconPath = "assets\\app.ico" }
           if (Test-Path "dist") { Remove-Item -Recurse -Force dist }
           if (Test-Path "build") { Remove-Item -Recurse -Force build }
-          pyinstaller BuffetApp\main.py `
-            --onedir --windowed --name BuffetApp $iconArg `
-            --add-data "BuffetApp;BuffetApp"
-          if (-not (Test-Path "dist\BuffetApp\BuffetApp.exe")) {
+          $args = @(
+            'BuffetApp\\main.py',
+            '--noconfirm',
+            '--onedir',
+            '--windowed',
+            '--name','BuffetApp',
+            '--add-data','BuffetApp:BuffetApp'
+          )
+          if ($iconPath) { $args += @('--icon', $iconPath) }
+          pyinstaller @args
+          if (-not (Test-Path "dist\\BuffetApp\\BuffetApp.exe")) {
             throw "No se generó dist\\BuffetApp\\BuffetApp.exe"
           }
 
