@@ -52,6 +52,7 @@ class VentasViewNew(tk.Frame):
         self.carrito = []  # [id, nombre, precio, cantidad]
         self.imprimir_ticket_var = tk.BooleanVar(value=True)
         self.modo_orden = tk.BooleanVar(value=False)
+        self.productos_ordenados = None  # lista temporal cuando se activa Ordenar
         self._build_layout()
         self._draw_productos()
         self._draw_carrito()
@@ -72,10 +73,32 @@ class VentasViewNew(tk.Frame):
         btn_reload.pack(side="left")
         
         def _toggle_modo_orden():
-            self.modo_orden.set(not self.modo_orden.get())
-            self._draw_productos()
-        btn_orden = tk.Button(top_actions, text="Modo ordenar", command=_toggle_modo_orden, bg="#FDE68A", font=(FONT_FAMILY, 10))
+            # Activar/desactivar modo ordenar. Al guardar, persistimos orden en DB.
+            if not self.modo_orden.get():
+                self.productos_ordenados = list(self.productos)
+                self.modo_orden.set(True)
+                try:
+                    self._btn_orden.configure(text="Guardar orden")
+                except Exception:
+                    pass
+                self._draw_productos()
+            else:
+                # Guardar orden en DB y salir
+                try:
+                    if isinstance(self.productos_ordenados, list) and self.productos_ordenados:
+                        self._guardar_orden_db(self.productos_ordenados)
+                except Exception:
+                    pass
+                self.productos_ordenados = None
+                self.modo_orden.set(False)
+                try:
+                    self._btn_orden.configure(text="Ordenar")
+                except Exception:
+                    pass
+                self.recargar_productos()
+        btn_orden = tk.Button(top_actions, text="Ordenar", command=_toggle_modo_orden, bg="#FDE68A", font=(FONT_FAMILY, 10))
         btn_orden.pack(side="left", padx=8)
+        self._btn_orden = btn_orden
         # Panel productos con scrollbar (canvas + frame interno)
         canvas_frame = tk.Frame(self.left_container, bg="#F8FAFC")
         canvas_frame.pack(fill="both", expand=True)
@@ -139,8 +162,11 @@ class VentasViewNew(tk.Frame):
         for c in range(self.max_cols):
             # uniform mantiene las 3 columnas con el mismo ancho base; weight=0 evita que se expandan
             self.panel_productos.grid_columnconfigure(c, weight=0, uniform='prod', minsize=min_col_w)
+
+        # Fuente de productos: en modo ordenar usar lista temporal
+        productos_src = self.productos_ordenados if (self.modo_orden.get() and isinstance(self.productos_ordenados, list)) else self.productos
         # dibujar todos los productos; el canvas proveerá scroll si no entran
-        for idx, prod in enumerate(self.productos):
+        for idx, prod in enumerate(productos_src):
             # Manejar filas con/sin columna contabiliza_stock
             try:
                 prod_id, nombre, precio, stock, _visible, _codigo, contabiliza, orden_visual = prod
@@ -233,6 +259,15 @@ class VentasViewNew(tk.Frame):
                 btn_dn = tk.Button(ctrl, text="→", width=3, command=lambda i=idx: self._mover_por_indice(i, 1))
                 btn_up.pack(side="left", padx=2)
                 btn_dn.pack(side="left", padx=2)
+                # Deshabilitar flechas inválidas (al inicio/fin)
+                try:
+                    total_items = len(productos_src)
+                    if idx == 0:
+                        btn_up.configure(state='disabled')
+                    if idx == total_items - 1:
+                        btn_dn.configure(state='disabled')
+                except Exception:
+                    pass
 
             # Guardar referencia por si se quiere usar más adelante
             self.botones_funcion.append(lambda e=None, p=prod: self._agregar_al_carrito(p))
@@ -240,22 +275,44 @@ class VentasViewNew(tk.Frame):
             self._cards.append(card)
 
     def _mover_por_indice(self, idx_from, delta):
-        # Movimiento lineal: delta -1 (←) hacia índice menor; delta +1 (→) hacia índice mayor
-        total = len(self.productos)
+        """En modo ordenar, mover producto en memoria y redibujar."""
+        if not self.modo_orden.get() or not isinstance(self.productos_ordenados, list):
+            return
+        total = len(self.productos_ordenados)
         if total <= 1:
             return
         idx_to = idx_from + delta
         if idx_to < 0 or idx_to >= total:
             return
         try:
-            p1 = self.productos[idx_from]
-            p2 = self.productos[idx_to]
-            id1, orden1 = p1[0], (p1[7] if len(p1) > 7 else idx_from+1)
-            id2, orden2 = p2[0], (p2[7] if len(p2) > 7 else idx_to+1)
-            self._swap_productos_db(id1, orden1, id2, orden2)
-            self.recargar_productos()
+            self.productos_ordenados[idx_from], self.productos_ordenados[idx_to] = (
+                self.productos_ordenados[idx_to], self.productos_ordenados[idx_from]
+            )
+            self._draw_productos()
         except Exception:
             pass
+
+    def _guardar_orden_db(self, productos_ordenados):
+        """Persistir el orden actual a orden_visual (1..N)."""
+        try:
+            conn = get_connection()
+            cur = conn.cursor()
+            cur.execute("UPDATE products SET orden_visual = id WHERE orden_visual IS NULL")
+            pos = 1
+            for prod in productos_ordenados:
+                try:
+                    pid = int(prod[0])
+                    cur.execute("UPDATE products SET orden_visual=? WHERE id=?", (pos, pid))
+                    pos += 1
+                except Exception:
+                    pass
+            conn.commit()
+            conn.close()
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     def _swap_productos_db(self, id1, orden1, id2, orden2):
         try:
