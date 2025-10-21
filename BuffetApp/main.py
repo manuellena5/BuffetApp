@@ -3,10 +3,8 @@ import datetime
 from tkinter import simpledialog, messagebox
 
 # Núcleo ligero importado al inicio; vistas pesadas se importan lazy dentro de métodos
-from menu_view import MenuView
 from init_db import init_db, log_error
 from app_config import get_config
-from login_view import LoginView
 from utils_paths import CONFIG_PATH, DB_PATH, resource_path
 from db_utils import get_connection
 import sqlite3
@@ -21,8 +19,30 @@ class BarCanchaApp:
         # TODO: Implementar lógica real de impresión de ticket si es necesario
         print("[DEBUG] imprimir_ticket llamado con carrito:", carrito)
         # Aquí puedes llamar a la lógica de impresión real si existe
+
+    def marcar_tickets_impresos(self, ticket_ids):
+        """Marca como 'Impreso' los tickets indicados.
+        Acepta lista de IDs (int) y realiza un UPDATE en bloque.
+        """
+        try:
+            if not ticket_ids:
+                return
+            ids = [int(x) for x in ticket_ids if str(x).isdigit()]
+            if not ids:
+                return
+            placeholders = ",".join(["?"] * len(ids))
+            with get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(f"UPDATE tickets SET status='Impreso' WHERE id IN ({placeholders})", ids)
+                conn.commit()
+        except Exception:
+            # No bloquear el flujo por errores de marcado; loguear si hay logger
+            try:
+                log_error("No se pudieron marcar tickets como Impreso", "marcar_tickets_impresos")
+            except Exception:
+                pass
     def __init__(self, root):
-        import json, os
+        import json, os, threading
         self.root = root
         # Confirmación al cerrar la aplicación desde la 'X'
         try:
@@ -37,20 +57,35 @@ class BarCanchaApp:
         # Establecer icono de la aplicación
         # Intentar varios iconos empaquetados
         try:
-            for candidate in [
-                "cdm_mitre_white_app_256.png",
-                "cdm_mitre_white_app_2048.png",
-                "icon_salir.png"
-            ]:
-                icon_path = resource_path(candidate)
-                if os.path.exists(icon_path):
-                    self.root.iconphoto(True, tk.PhotoImage(file=icon_path))
-                    break
+            # Preferir .ico (más liviano en arranque) y fallback a PNGs
+            ico = resource_path("app.ico")
+            if os.path.exists(ico):
+                try:
+                    self.root.iconbitmap(ico)
+                except Exception:
+                    pass
+            if not os.path.exists(ico):
+                for candidate in [
+                    "cdm_mitre_white_app_256.png",
+                    "cdm_mitre_white_app_2048.png",
+                    "icon_salir.png"
+                ]:
+                    icon_path = resource_path(candidate)
+                    if os.path.exists(icon_path):
+                        self.root.iconphoto(True, tk.PhotoImage(file=icon_path))
+                        break
         except Exception as e:
             print(f"No se pudo cargar un icono: {e}")
 
         # Inicializar DB y migraciones de POS/Settings (idempotente)
-        init_db()
+        # Si la DB ya existe, correr en segundo plano para no bloquear el arranque
+        try:
+            if not os.path.exists(DB_PATH):
+                init_db()
+            else:
+                threading.Thread(target=init_db, daemon=True).start()
+        except Exception:
+            pass
 
         # Leer/crear config en AppData
         if not os.path.exists(CONFIG_PATH):
@@ -80,22 +115,26 @@ class BarCanchaApp:
         self.menu_bar.add_command(label="Ventas", command=self.mostrar_ventas, state=tk.DISABLED)
         self.menu_bar.add_command(label="Historial ventas", command=self.mostrar_historial, state=tk.DISABLED)
         self.menu_bar.add_command(label="Productos", command=self.mostrar_productos, state=tk.DISABLED)
-        from herramientas_view import HerramientasView  # lazy-suitable (ligera)
-        self.herramientas_view = HerramientasView(self)
+        from herramientas_view import HerramientasView  # mantener import, instanciar lazy
+        self.herramientas_view = None
+        def _hv():
+            if self.herramientas_view is None:
+                self.herramientas_view = HerramientasView(self)
+            return self.herramientas_view
         self.herramientas_menu = tk.Menu(self.menu_bar, tearoff=0)
         # Usar el método de instancia para permitir dependencias internas
         # Configuración de impresora (nueva ventana)
         self.herramientas_menu.add_command(
-            label="Config. Impresora", command=lambda: self.herramientas_view.abrir_impresora_window(self.root), state=tk.DISABLED
+            label="Config. Impresora", command=lambda: _hv().abrir_impresora_window(self.root), state=tk.DISABLED
         )
         # (Eliminado) Opción de backup local directo: se centraliza en "Backups y Sincronización"
         # Abrir gestión de backups locales, importación desde .db y POS
         self.herramientas_menu.add_command(
-            label="Backups y Sincronización", command=lambda: self.herramientas_view.abrir_backup_window(self.root), state=tk.DISABLED
+            label="Backups y Sincronización", command=lambda: _hv().abrir_backup_window(self.root), state=tk.DISABLED
         )
         # Submenú Punto de Venta
         self.pos_menu = tk.Menu(self.herramientas_menu, tearoff=0)
-        self.pos_menu.add_command(label="Gestionar Punto de Venta", command=lambda: self.herramientas_view.abrir_pos_window(self.root))
+        self.pos_menu.add_command(label="Gestionar Punto de Venta", command=lambda: _hv().abrir_pos_window(self.root))
         self.herramientas_menu.add_cascade(label="Punto de Venta", menu=self.pos_menu)
 
         # Menú de caja: permite abrir y cerrar la caja diaria
@@ -113,14 +152,8 @@ class BarCanchaApp:
         self.logged_user = None
         self.logged_role = None
 
-        self.menu_view = MenuView(
-            self.root,
-            get_caja_info=self.get_caja_info,
-            on_cerrar_caja=self.cerrar_caja_window,
-            on_ver_cierre=self.ver_cierre_caja,
-            on_abrir_caja=self.abrir_caja_window,
-            controller=self
-        )
+        # Crear MenuView de forma perezosa luego del login para acelerar arranque
+        self.menu_view = None
 
         # Vistas cargadas a demanda
         self.ventas_view = None
@@ -133,6 +166,8 @@ class BarCanchaApp:
         self.caja_abierta_id = None
         
         self.ocultar_frames()
+        # Import tardío para reducir costo inicial
+        from login_view import LoginView  # noqa: E402 (import tardío intencional)
         self.login_view = LoginView(self.root, self.on_login)
         self.login_view.pack(fill=tk.BOTH, expand=True)
 
@@ -421,7 +456,11 @@ class BarCanchaApp:
                 pass
 
     def ocultar_frames(self):
-        self.menu_view.pack_forget()
+        if getattr(self, 'menu_view', None):
+            try:
+                self.menu_view.pack_forget()
+            except Exception:
+                pass
         if self.ventas_view:
             self.ventas_view.pack_forget()
         if self.historial_view:
@@ -451,8 +490,22 @@ class BarCanchaApp:
         self.mostrar_pie_caja(self.cajas_view)  # si tenés este pie en otras vistas
 
     def mostrar_menu_principal(self):
+        # Crear MenuView solo cuando sea necesario (post-login)
+        if self.menu_view is None:
+            from menu_view import MenuView  # import tardío
+            self.menu_view = MenuView(
+                self.root,
+                get_caja_info=self.get_caja_info,
+                on_cerrar_caja=self.cerrar_caja_window,
+                on_ver_cierre=self.ver_cierre_caja,
+                on_abrir_caja=self.abrir_caja_window,
+                controller=self,
+            )
         self.ocultar_frames()
-        self.menu_view.actualizar_caja_info()
+        try:
+            self.menu_view.actualizar_caja_info()
+        except Exception:
+            pass
         self.menu_view.pack(fill=tk.BOTH, expand=True)
         self.mostrar_pie_caja(self.menu_view)
 
@@ -506,9 +559,15 @@ class BarCanchaApp:
             self.ventas_view = VentasViewNew(
                 self.root,
                 cobrar_callback=self.on_cobrar,
-                imprimir_ticket_callback=self.imprimir_ticket
+                imprimir_ticket_callback=self.imprimir_ticket,
+                on_tickets_impresos=self.marcar_tickets_impresos
             )
-        # No es necesario llamar a actualizar_productos, la vista nueva se actualiza sola
+        # Siempre refrescar productos/stock/precios al entrar a Ventas
+        try:
+            if hasattr(self.ventas_view, 'recargar_productos'):
+                self.ventas_view.recargar_productos()
+        except Exception:
+            pass
         self.ocultar_frames()
         self.ventas_view.pack(fill=tk.BOTH, expand=True)
         # Ajusta el frame del carrito para que ocupe todo el alto disponible
@@ -529,7 +588,7 @@ class BarCanchaApp:
         cursor.execute(
             """
             SELECT cd.codigo_caja, COALESCE(d.descripcion, cd.disciplina) AS disciplina,
-                   cd.usuario_apertura, cd.fecha, cd.hora_apertura, cd.fondo_inicial, cd.estado
+                   cd.usuario_apertura, cd.fecha, cd.hora_apertura, cd.fondo_inicial, cd.estado, COALESCE(cd.descripcion_evento, '')
               FROM caja_diaria cd
               LEFT JOIN disciplinas d ON d.codigo = cd.disciplina
              WHERE cd.id=?
@@ -538,10 +597,11 @@ class BarCanchaApp:
         )
         info = cursor.fetchone()
         if info:
-            codigo_caja, disciplina, usuario_apertura, fecha, hora_apertura, fondo_inicial, estado = info
+            codigo_caja, disciplina, usuario_apertura, fecha, hora_apertura, fondo_inicial, estado, descripcion_evento = info
         else:
             codigo_caja = disciplina = usuario_apertura = fecha = hora_apertura = estado = ''
             fondo_inicial = 0
+            descripcion_evento = ''
 
         cursor.execute("SELECT tipo, monto, observacion FROM caja_movimiento WHERE caja_id=?", (caja_id,))
         ingresos = retiros = 0
@@ -633,6 +693,7 @@ class BarCanchaApp:
         return {
             'codigo': codigo_caja,
             'disciplina': disciplina,
+            'descripcion_evento': descripcion_evento,
             'usuario_apertura': usuario_apertura,
             'fecha': fecha,
             'hora_apertura': hora_apertura,
@@ -734,13 +795,21 @@ class BarCanchaApp:
 
             # Crear un ticket por cada unidad vendida (un ticket por item x cantidad)
             prod_ids = [item[0] for item in carrito]
-            # Obtener datos necesarios de products: codigo_producto, categoria_id, stock_actual
-            cursor.execute(
-                f"SELECT id, codigo_producto, categoria_id, stock_actual FROM products WHERE id IN ({','.join('?' for _ in prod_ids)})",
-                prod_ids,
-            )
-            prod_rows = cursor.fetchall()
-            prod_info = {r[0]: {'codigo': r[1], 'categoria': r[2], 'stock': r[3]} for r in prod_rows}
+            # Obtener datos necesarios de products: codigo_producto, categoria_id, stock_actual, contabiliza_stock
+            try:
+                cursor.execute(
+                    f"SELECT id, codigo_producto, categoria_id, stock_actual, COALESCE(contabiliza_stock,1) FROM products WHERE id IN ({','.join('?' for _ in prod_ids)})",
+                    prod_ids,
+                )
+                prod_rows = cursor.fetchall()
+                prod_info = {r[0]: {'codigo': r[1], 'categoria': r[2], 'stock': r[3], 'contabiliza': int(r[4])} for r in prod_rows}
+            except Exception:
+                cursor.execute(
+                    f"SELECT id, codigo_producto, categoria_id, stock_actual FROM products WHERE id IN ({','.join('?' for _ in prod_ids)})",
+                    prod_ids,
+                )
+                prod_rows = cursor.fetchall()
+                prod_info = {r[0]: {'codigo': r[1], 'categoria': r[2], 'stock': r[3], 'contabiliza': 1} for r in prod_rows}
 
             # Para la secuencia por caja: si hay caja abierta, usaremos y actualizaremos total_tickets en caja_diaria
             def next_ticket_seq():
@@ -778,11 +847,11 @@ class BarCanchaApp:
                             "INSERT INTO venta_items (ticket_id, producto_id, cantidad, precio_unitario, subtotal) VALUES (?, ?, ?, ?, ?)",
                             (ticket_id, prod_id, 1, precio, precio),
                         )
-                        # Actualizar stock sólo si no es infinito (999)
+                        # Actualizar stock sólo si contabiliza_stock=1
                         try:
-                            if stock_actual is not None and int(stock_actual) != 999:
+                            if int(info.get('contabiliza', 1)) == 1:
                                 cursor.execute("UPDATE products SET stock_actual = stock_actual - 1 WHERE id = ?", (prod_id,))
-                                stock_actual -= 1
+                                stock_actual = (stock_actual - 1) if stock_actual is not None else stock_actual
                         except Exception:
                             # no crítico; continuar
                             pass
@@ -939,6 +1008,15 @@ class BarCanchaApp:
                 default_idx = idx; break
         var_caja_tpl = tk.StringVar(value=(caja_items[default_idx] if caja_items else ""))
         ttk.Combobox(win, values=caja_items, textvariable=var_caja_tpl, state="readonly", width=18).pack(pady=2)
+        # Descripción del evento (nuevo campo)
+        tk.Label(win, text="Descripción del evento:", font=("Arial", 12)).pack(pady=(8,4))
+        entry_evento = tk.Entry(win, font=("Arial", 12))
+        entry_evento.pack(pady=(0, 6))
+        # Limitar a 100 caracteres
+        def _limit_evento(P):
+            return len(P) <= 100
+        entry_evento.configure(validate="key", validatecommand=(win.register(_limit_evento), "%P"))
+
         tk.Label(win, text="Observaciones:", font=("Arial", 12)).pack(pady=6)
         entry_obs = tk.Text(win, font=("Arial", 12), height=3, width=32)
         entry_obs.pack(pady=2)
@@ -955,6 +1033,7 @@ class BarCanchaApp:
             usuario = entry_usuario.get().strip()
             fondo = entry_fondo.get().strip().replace(",", ".")
             observaciones = entry_obs.get("1.0", tk.END).strip()
+            descripcion_evento = entry_evento.get().strip()
             # Obtener el código real a partir de la descripción seleccionada
             _disc_sel_desc = var_disc_desc.get()
             disciplina = _disc_map_desc_to_code.get(_disc_sel_desc, _disc_sel_desc)
@@ -980,6 +1059,9 @@ class BarCanchaApp:
                 return
             if len(observaciones) > 30:
                 messagebox.showwarning("Observaciones", "Máximo 30 caracteres.")
+                return
+            if len(descripcion_evento) > 100:
+                messagebox.showwarning("Descripción del evento", "Máximo 100 caracteres.")
                 return
             conn = get_connection()
             cursor = conn.cursor()
@@ -1009,14 +1091,20 @@ class BarCanchaApp:
             # Intentar insertar con pos_uuid y caja_uuid si las columnas existen (migración las crea)
             try:
                 cursor.execute(
-                    "INSERT INTO caja_diaria (codigo_caja, disciplina, fecha, usuario_apertura, hora_apertura, apertura_dt, fondo_inicial, observaciones_apertura, estado, pos_uuid, caja_uuid, pos_caja_id, caja_prefijo) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'abierta', ?, ?, ?, ?)",
-                    (codigo_caja, disciplina, fecha, usuario, hora_apertura, f"{fecha} {hora_apertura}", fondo_val, observaciones, pos_uuid, caja_uuid, pos_caja_id, caja_prefijo)
+                    "INSERT INTO caja_diaria (codigo_caja, disciplina, fecha, usuario_apertura, hora_apertura, apertura_dt, fondo_inicial, descripcion_evento, observaciones_apertura, estado, pos_uuid, caja_uuid, pos_caja_id, caja_prefijo) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'abierta', ?, ?, ?, ?)",
+                    (codigo_caja, disciplina, fecha, usuario, hora_apertura, f"{fecha} {hora_apertura}", fondo_val, descripcion_evento, observaciones, pos_uuid, caja_uuid, pos_caja_id, caja_prefijo)
                 )
             except Exception:
                 # Fallback: columnas no existen en bases viejas
+                try:
+                    cursor.execute(
+                        "ALTER TABLE caja_diaria ADD COLUMN descripcion_evento TEXT"
+                    )
+                except Exception:
+                    pass
                 cursor.execute(
-                    "INSERT INTO caja_diaria (codigo_caja, disciplina, fecha, usuario_apertura, hora_apertura, apertura_dt, fondo_inicial, observaciones_apertura, estado) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'abierta')",
-                    (codigo_caja, disciplina, fecha, usuario, hora_apertura, f"{fecha} {hora_apertura}", fondo_val, observaciones))
+                    "INSERT INTO caja_diaria (codigo_caja, disciplina, fecha, usuario_apertura, hora_apertura, apertura_dt, fondo_inicial, descripcion_evento, observaciones_apertura, estado) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'abierta')",
+                    (codigo_caja, disciplina, fecha, usuario, hora_apertura, f"{fecha} {hora_apertura}", fondo_val, descripcion_evento, observaciones))
             caja_id = cursor.lastrowid
             conn.commit()
             conn.close()
@@ -1058,48 +1146,110 @@ class BarCanchaApp:
         stock_win.geometry(f"{ancho}x{alto}+{x}+{y}")
         stock_win.transient(self.root)
         stock_win.grab_set()
-        tk.Label(stock_win, text="Agregar stock/precios", font=("Arial", 15, "bold")).pack(pady=10)
+        header = tk.Frame(stock_win)
+        header.pack(fill=tk.X, pady=10)
+        tk.Label(header, text="Agregar stock/precios", font=("Arial", 15, "bold")).pack(side=tk.LEFT, padx=(0,8))
+        def _abrir_alta_desde_stock():
+            # Abrir el modal de alta reutilizando ProductosView, y refrescar la grilla al guardar
+            try:
+                from productos_view import ProductosView
+                # Crear un frame no visible dentro de esta ventana como master del modal
+                pv_hidden = ProductosView(stock_win)
+                try:
+                    pv_hidden.pack_forget()
+                except Exception:
+                    pass
+                # Reemplazar su método cargar_productos para que refresque esta grilla cuando el alta confirme
+                pv_hidden.cargar_productos = lambda: _refrescar_grid()
+                pv_hidden._abrir_agregar_producto()
+            except Exception as e:
+                messagebox.showerror("Productos", f"No se pudo abrir el alta de productos.\n{e}")
+        btn_nuevo = tk.Button(header, text="Agregar producto nuevo", command=_abrir_alta_desde_stock, bg="#1976d2", fg="white", font=("Arial", 11))
+        btn_nuevo.pack(side=tk.RIGHT)
         frame = tk.Frame(stock_win)
         frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         # Encabezados
-        headers = ["Producto", "Stock", "Precio", "Ocultar", ""]
+        headers = ["Producto", "Stock", "Precio", "Ocultar", "Contabilizar Stock", ""]
         for i, h in enumerate(headers):
             tk.Label(frame, text=h, font=("Arial", 11, "bold")).grid(row=0, column=i, padx=6, pady=4)
-        # Obtener productos
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT p.id, p.nombre, p.stock_actual, p.visible, p.precio_venta, c.descripcion as categoria FROM products p LEFT JOIN Categoria_Producto c ON p.categoria_id = c.id ORDER BY c.descripcion, p.nombre"
-        )
-        productos = cursor.fetchall()
-        conn.close()
-        entries_stock = {}
-        entries_precio = {}
-        checks = {}
-        last_categoria = None
-        row_idx = 1
-        for prod in productos:
-            pid, nombre, stock, visible, precio, categoria = prod
-            if categoria != last_categoria:
-                tk.Label(frame, text=f"{categoria if categoria else 'Sin categoría'}", font=("Arial", 11, "bold"), fg="#1976d2").grid(row=row_idx, column=0, columnspan=5, sticky="w", pady=(10,2))
+        def _refrescar_grid():
+            # Limpiar filas anteriores (mantener encabezados en row 0)
+            for w in frame.grid_slaves():
+                info = w.grid_info()
+                try:
+                    if int(info.get('row', 0)) > 0:
+                        w.destroy()
+                except Exception:
+                    pass
+            # Obtener productos nuevamente
+            conn = get_connection(); cursor = conn.cursor()
+            try:
+                cursor.execute(
+                    "SELECT p.id, p.nombre, p.stock_actual, p.visible, p.precio_venta, COALESCE(p.contabiliza_stock,1), c.descripcion as categoria FROM products p LEFT JOIN Categoria_Producto c ON p.categoria_id = c.id ORDER BY c.descripcion, p.nombre"
+                )
+            except Exception:
+                cursor.execute(
+                    "SELECT p.id, p.nombre, p.stock_actual, p.visible, p.precio_venta, 1 as contabiliza_stock, c.descripcion as categoria FROM products p LEFT JOIN Categoria_Producto c ON p.categoria_id = c.id ORDER BY c.descripcion, p.nombre"
+                )
+            productos2 = cursor.fetchall(); conn.close()
+            nonlocal_entries_stock.clear(); nonlocal_entries_precio.clear(); nonlocal_checks.clear(); nonlocal_checks_contab.clear()
+            last_categoria = None; row_idx = 1
+            for prod in productos2:
+                pid, nombre, stock, visible, precio, contabiliza, categoria = prod
+                if categoria != last_categoria:
+                    tk.Label(frame, text=f"{categoria if categoria else 'Sin categoría'}", font=("Arial", 11, "bold"), fg="#1976d2").grid(row=row_idx, column=0, columnspan=6, sticky="w", pady=(10,2))
+                    row_idx += 1
+                    last_categoria = categoria
+                tk.Label(frame, text=nombre, font=("Arial", 11)).grid(row=row_idx, column=0, sticky="w", padx=4)
+                var_stock = tk.StringVar(value=str(stock))
+                entry_stock = tk.Entry(frame, textvariable=var_stock, width=8, font=("Arial", 11))
+                entry_stock.grid(row=row_idx, column=1, padx=4)
+                nonlocal_entries_stock[pid] = var_stock
+                var_precio = tk.StringVar(value=str(precio))
+                entry_precio = tk.Entry(frame, textvariable=var_precio, width=8, font=("Arial", 11))
+                entry_precio.grid(row=row_idx, column=2, padx=4)
+                nonlocal_entries_precio[pid] = var_precio
+                var_chk = tk.BooleanVar(value=bool(visible))
+                tk.Checkbutton(frame, variable=var_chk).grid(row=row_idx, column=3)
+                nonlocal_checks[pid] = var_chk
+                var_ct = tk.BooleanVar(value=bool(contabiliza))
+                # Toggle habilitación del campo Stock según "Contabilizar Stock"
+                def _make_toggle(e_widget, v_stock, v_ct):
+                    def _t():
+                        try:
+                            if v_ct.get():
+                                e_widget.config(state='normal')
+                            else:
+                                v_stock.set('0')
+                                e_widget.config(state='disabled')
+                        except Exception:
+                            pass
+                    return _t
+                ct_btn = tk.Checkbutton(frame, variable=var_ct, command=_make_toggle(entry_stock, var_stock, var_ct))
+                ct_btn.grid(row=row_idx, column=4)
+                # Estado inicial del stock según contabiliza
+                try:
+                    if not bool(contabiliza):
+                        var_stock.set('0'); entry_stock.config(state='disabled')
+                except Exception:
+                    pass
+                nonlocal_checks_contab[pid] = var_ct
                 row_idx += 1
-                last_categoria = categoria
-            tk.Label(frame, text=nombre, font=("Arial", 11)).grid(row=row_idx, column=0, sticky="w", padx=4)
-            var_stock = tk.StringVar(value=str(stock))
-            entry_stock = tk.Entry(frame, textvariable=var_stock, width=8, font=("Arial", 11))
-            entry_stock.grid(row=row_idx, column=1, padx=4)
-            entries_stock[pid] = var_stock
-            var_precio = tk.StringVar(value=str(precio))
-            entry_precio = tk.Entry(frame, textvariable=var_precio, width=8, font=("Arial", 11))
-            entry_precio.grid(row=row_idx, column=2, padx=4)
-            entries_precio[pid] = var_precio
-            var_chk = tk.BooleanVar(value=bool(visible))
-            chk = tk.Checkbutton(frame, variable=var_chk)
-            chk.grid(row=row_idx, column=3)
-            checks[pid] = var_chk
-            row_idx += 1
+
+        # Estructuras mutables que usaremos en refrescos
+        nonlocal_entries_stock = {}
+        nonlocal_entries_precio = {}
+        nonlocal_checks = {}
+        nonlocal_checks_contab = {}
+        entries_stock = nonlocal_entries_stock
+        entries_precio = nonlocal_entries_precio
+        checks = nonlocal_checks
+        checks_contab = nonlocal_checks_contab
+
+        # Primera carga
+        _refrescar_grid()
         # Label info
-        label_info = tk.Label(stock_win, text="Si el Stock es 999, no se descuenta al realizar una venta.", font=("Arial", 10), fg="#555")
+        label_info = tk.Label(stock_win, text="Se descuenta stock sólo si 'Contabilizar Stock' está activado.", font=("Arial", 10), fg="#555")
         label_info.pack(pady=(0, 8))
         # Validación y guardado
         def guardar_stock():
@@ -1107,32 +1257,41 @@ class BarCanchaApp:
             for pid in entries_stock:
                 try:
                     val = int(entries_stock[pid].get())
-                    if val < 1:
+                    if val < 0:
                         raise ValueError
                 except Exception:
-                    messagebox.showerror("Stock", f"Stock inválido para el producto ID {pid}. Debe ser un número mayor a 0.")
+                    messagebox.showerror("Stock", f"Stock inválido para el producto ID {pid}. Debe ser un número >= 0.")
                     return
                 try:
                     precio_str = entries_precio[pid].get().replace(",", ".")
                     precio_val = float(precio_str)
-                    if precio_val <= 0 or precio_val > 999999:
+                    if precio_val < 0 or precio_val > 999999:
                         raise ValueError
                 except Exception:
                     messagebox.showerror("Precio", f"Precio inválido para el producto ID {pid}.")
                     return
                 visible = 1 if checks[pid].get() else 0
-                cambios.append((val, visible, precio_val, pid))
+                contab = 1 if checks_contab[pid].get() else 0
+                # Si no contabiliza, el stock debe guardarse como 0
+                val_to_save = 0 if contab == 0 else val
+                cambios.append((val_to_save, visible, precio_val, contab, pid))
             conn = get_connection()
             cursor = conn.cursor()
-            for val, visible, precio, pid in cambios:
-                cursor.execute(
-                    "UPDATE products SET stock_actual=?, visible=?, precio_venta=? WHERE id=?",
-                    (val, visible, precio, pid),
-                )
+            for val, visible, precio, contab, pid in cambios:
+                try:
+                    cursor.execute(
+                        "UPDATE products SET stock_actual=?, visible=?, precio_venta=?, contabiliza_stock=? WHERE id=?",
+                        (val, visible, precio, contab, pid),
+                    )
+                except Exception:
+                    cursor.execute(
+                        "UPDATE products SET stock_actual=?, visible=?, precio_venta=? WHERE id=?",
+                        (val, visible, precio, pid),
+                    )
             conn.commit()
             conn.close()
             messagebox.showinfo("Stock", "Stock y precios actualizados correctamente.")
-            stock_win.destroy()
+            _refrescar_grid()
         btn_guardar = tk.Button(stock_win, text="Guardar Cambios", command=guardar_stock, bg="#388e3c", fg="white", font=("Arial", 12), width=18)
         btn_guardar.pack(pady=10)
         btn_cancelar = tk.Button(stock_win, text="Cancelar", command=stock_win.destroy, font=("Arial", 12), width=12)

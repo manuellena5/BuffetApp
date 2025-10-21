@@ -8,12 +8,23 @@ from theme import FONT_FAMILY, CART
 def cargar_productos():
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute('''
-        SELECT p.id, p.nombre, p.precio_venta, p.stock_actual, p.visible, p.codigo_producto
-        FROM products p
-        WHERE p.visible = 1
-        ORDER BY p.id
-    ''')
+    try:
+        cursor.execute('''
+            SELECT p.id, p.nombre, p.precio_venta, p.stock_actual, p.visible, p.codigo_producto,
+                   COALESCE(p.contabiliza_stock,1) AS contabiliza_stock,
+                   CAST(COALESCE(p.orden_visual, p.id) AS INTEGER) AS orden_visual
+            FROM products p
+            WHERE p.visible = 1
+            ORDER BY CAST(COALESCE(p.orden_visual, p.id) AS INTEGER)
+        ''')
+    except Exception:
+        cursor.execute('''
+            SELECT p.id, p.nombre, p.precio_venta, p.stock_actual, p.visible, p.codigo_producto,
+                   1 as contabiliza_stock, p.id as orden_visual
+            FROM products p
+            WHERE p.visible = 1
+            ORDER BY p.id
+        ''')
     productos = cursor.fetchall()
     conn.close()
     return productos
@@ -27,14 +38,16 @@ def cargar_metodos_pago():
     return rows
 
 class VentasViewNew(tk.Frame):
-    def __init__(self, master, cobrar_callback, imprimir_ticket_callback, *args, **kwargs):
+    def __init__(self, master, cobrar_callback, imprimir_ticket_callback, on_tickets_impresos=None, *args, **kwargs):
         super().__init__(master, *args, **kwargs)
         self.cobrar_callback = cobrar_callback
         self.imprimir_ticket_callback = imprimir_ticket_callback
+        self.on_tickets_impresos = on_tickets_impresos
         self.productos = cargar_productos()
         self.stock_dict = {prod[0]: prod[3] for prod in self.productos}
         self.carrito = []  # [id, nombre, precio, cantidad]
         self.imprimir_ticket_var = tk.BooleanVar(value=True)
+        self.modo_orden = tk.BooleanVar(value=False)
         self._build_layout()
         self._draw_productos()
         self._draw_carrito()
@@ -53,6 +66,12 @@ class VentasViewNew(tk.Frame):
         top_actions.pack(fill="x", padx=8, pady=(8,4))
         btn_reload = tk.Button(top_actions, text="Actualizar productos", command=self.recargar_productos, bg="#E5E7EB", font=(FONT_FAMILY, 10))
         btn_reload.pack(side="left")
+        
+        def _toggle_modo_orden():
+            self.modo_orden.set(not self.modo_orden.get())
+            self._draw_productos()
+        btn_orden = tk.Button(top_actions, text="Modo ordenar", command=_toggle_modo_orden, bg="#FDE68A", font=(FONT_FAMILY, 10))
+        btn_orden.pack(side="left", padx=8)
         # Panel productos con scrollbar (canvas + frame interno)
         canvas_frame = tk.Frame(self.left_container, bg="#F8FAFC")
         canvas_frame.pack(fill="both", expand=True)
@@ -90,31 +109,49 @@ class VentasViewNew(tk.Frame):
         self.panel_carrito.grid(row=0, column=1, sticky="nsew", padx=(8,16), pady=16)
 
     def _draw_productos(self):
-        # El panel_productos contiene el top_actions; solo eliminar tarjetas existentes debajo
-        # Borrar todo menos el primer hijo (top_actions)
-        children = self.panel_productos.winfo_children()
-        for w in children[1:]:
-            w.destroy()
-        card_width = 260
-        card_height = 110
+        # Limpiar todas las tarjetas actuales antes de redibujar
+        for w in self.panel_productos.winfo_children():
+            try:
+                w.destroy()
+            except Exception:
+                pass
+        # Medidas y espaciados usados también por Drag & Drop
+        self.card_width = 260
+        self.card_height = 110
+        self.card_padx = 8
+        self.card_pady = 10
         self.botones_funcion = []
-        max_cols = 3
+        self.max_cols = 3
+        self._cards = []
         # dibujar todos los productos; el canvas proveerá scroll si no entran
         for idx, prod in enumerate(self.productos):
-            prod_id, nombre, precio, stock, _, _ = prod
+            # Manejar filas con/sin columna contabiliza_stock
+            try:
+                prod_id, nombre, precio, stock, _visible, _codigo, contabiliza, orden_visual = prod
+            except Exception:
+                prod_id, nombre, precio, stock, _visible, _codigo = prod
+                contabiliza = 1
+                orden_visual = idx + 1
             tecla = f"F{idx+1}"
-            fila = idx // max_cols
-            col = idx % max_cols
-            card = tk.Frame(self.panel_productos, bg="#FFFFFF", bd=2, relief="groove", width=card_width, height=card_height)
-            card.grid(row=fila, column=col, padx=8, pady=10, sticky="nsew")
+            fila = idx // self.max_cols
+            col = idx % self.max_cols
+            card = tk.Frame(self.panel_productos, bg="#FFFFFF", bd=2, relief="groove", width=self.card_width, height=self.card_height)
+            card.grid(row=fila, column=col, padx=self.card_padx, pady=self.card_pady, sticky="nsew")
             card.grid_propagate(False)
             name_lbl = tk.Label(card, text=nombre, font=(FONT_FAMILY, 16, "bold"), bg="#FFFFFF", anchor="w")
             name_lbl.pack(side="top", anchor="w", padx=16, pady=(10,0))
             price_lbl = tk.Label(card, text=f"$ {precio:,.0f}", font=(FONT_FAMILY, 14), fg="#059669", bg="#FFFFFF")
             price_lbl.pack(side="top", anchor="w", padx=16)
-            display_stock = '∞' if self.stock_dict.get(prod_id, 0) == 999 else self.stock_dict.get(prod_id, 0)
-            stock_lbl = tk.Label(card, text=f"Stock: {display_stock}", font=(FONT_FAMILY, 11), fg="#475569", bg="#FFFFFF")
-            stock_lbl.pack(side="top", anchor="w", padx=16)
+            # Mostrar stock sólo si contabiliza_stock=1
+            stock_lbl = None
+            try:
+                mostrar_stock = int(contabiliza) == 1
+            except Exception:
+                mostrar_stock = True
+            if mostrar_stock:
+                display_stock = self.stock_dict.get(prod_id, 0)
+                stock_lbl = tk.Label(card, text=f"Stock: {display_stock}", font=(FONT_FAMILY, 11), fg="#475569", bg="#FFFFFF")
+                stock_lbl.pack(side="top", anchor="w", padx=16)
             # (El botón "Agregar" fue removido; la tarjeta es clicable)
             tecla_lbl = tk.Label(card, text=tecla, font=(FONT_FAMILY,10), fg="#475569", bg="#FFFFFF")
             tecla_lbl.pack(side="right", padx=8, pady=10)
@@ -146,21 +183,95 @@ class VentasViewNew(tk.Frame):
             except Exception:
                 pass
             try:
-                card.bind('<Button-1>', _on_click)
+                if not self.modo_orden.get():
+                    card.bind('<Button-1>', _on_click)
             except Exception:
                 pass
-            for w in (name_lbl, price_lbl, stock_lbl, tecla_lbl,):
+            bindables = [name_lbl, price_lbl, tecla_lbl]
+            if stock_lbl is not None:
+                bindables.insert(2, stock_lbl)
+            for w in bindables:
                 try:
                     w.unbind('<Enter>')
                     w.unbind('<Leave>')
                 except Exception:
                     pass
                 try:
-                    w.bind('<Button-1>', lambda e, p=prod, widget=card: _on_click(e, p, widget))
+                    if not self.modo_orden.get():
+                        w.bind('<Button-1>', lambda e, p=prod, widget=card: _on_click(e, p, widget))
                 except Exception:
                     pass
+            # Controles de orden en modo ordenar
+            if self.modo_orden.get():
+                ctrl = tk.Frame(card, bg="#FFFFFF")
+                ctrl.pack(side="bottom", fill="x", padx=12, pady=6)
+                # ← mueve a la izquierda (índice-1), → mueve a la derecha (índice+1)
+                btn_up = tk.Button(ctrl, text="←", width=3, command=lambda i=idx: self._mover_por_indice(i, -1))
+                btn_dn = tk.Button(ctrl, text="→", width=3, command=lambda i=idx: self._mover_por_indice(i, 1))
+                btn_up.pack(side="left", padx=2)
+                btn_dn.pack(side="left", padx=2)
+
             # Guardar referencia por si se quiere usar más adelante
             self.botones_funcion.append(lambda e=None, p=prod: self._agregar_al_carrito(p))
+            card._idx = idx
+            self._cards.append(card)
+
+    def _mover_por_indice(self, idx_from, delta):
+        # Movimiento lineal: delta -1 (←) hacia índice menor; delta +1 (→) hacia índice mayor
+        total = len(self.productos)
+        if total <= 1:
+            return
+        idx_to = idx_from + delta
+        if idx_to < 0 or idx_to >= total:
+            return
+        try:
+            p1 = self.productos[idx_from]
+            p2 = self.productos[idx_to]
+            id1, orden1 = p1[0], (p1[7] if len(p1) > 7 else idx_from+1)
+            id2, orden2 = p2[0], (p2[7] if len(p2) > 7 else idx_to+1)
+            self._swap_productos_db(id1, orden1, id2, orden2)
+            self.recargar_productos()
+        except Exception:
+            pass
+
+    def _swap_productos_db(self, id1, orden1, id2, orden2):
+        try:
+            conn = get_connection()
+            cur = conn.cursor()
+            cur.execute("UPDATE products SET orden_visual = id WHERE orden_visual IS NULL")
+            cur.execute("UPDATE products SET orden_visual=? WHERE id=?", (orden2, id1))
+            cur.execute("UPDATE products SET orden_visual=? WHERE id=?", (orden1, id2))
+            conn.commit()
+            conn.close()
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def _mover_producto(self, prod_id, orden_actual, delta):
+        """Mueve el producto cambiando su orden_visual en +delta y ajusta colisión con el que ocupa esa posición."""
+        try:
+            conn = get_connection()
+            cur = conn.cursor()
+            # asegurar que todos tengan orden inicial
+            cur.execute("UPDATE products SET orden_visual = id WHERE orden_visual IS NULL")
+            nuevo = max(1, int(orden_actual) + int(delta))
+            # encontrar si hay otro con ese orden
+            cur.execute("SELECT id, orden_visual FROM products WHERE orden_visual=? AND id<>? ORDER BY id LIMIT 1", (nuevo, prod_id))
+            other = cur.fetchone()
+            # actualizar el actual al nuevo
+            cur.execute("UPDATE products SET orden_visual=? WHERE id=?", (nuevo, prod_id))
+            # si hay colisión, empujar al otro en sentido opuesto (simple swap)
+            if other:
+                cur.execute("UPDATE products SET orden_visual=? WHERE id=?", (orden_actual, other[0]))
+            conn.commit()
+            conn.close()
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     def recargar_productos(self):
         """Recargar listado de productos desde la DB y redibujar únicamente las tarjetas."""
@@ -302,22 +413,27 @@ class VentasViewNew(tk.Frame):
     def _agregar_al_carrito(self, prod):
         prod_id = prod[0]
         stock_val = self.stock_dict.get(prod_id, 0)
-        # stock==999 significa stock infinito
-        if stock_val != 999 and stock_val == 0:
+        # Si el producto no contabiliza stock, permitir agregar siempre (no chequear existencia)
+        # Necesitamos conocer contabiliza_stock del producto actual
+        try:
+            contabiliza = int(prod[6])
+        except Exception:
+            contabiliza = 1
+        if contabiliza == 1 and stock_val == 0:
             messagebox.showwarning("Sin stock", f"No hay stock disponible para {prod[1]}")
             return
         existente = next((item for item in self.carrito if item[0] == prod_id), None)
         if existente:
-            # permitir cuando stock sea infinito o haya al menos 1 unidad disponible
-            if stock_val == 999 or stock_val > 0:
+            # permitir cuando no contabiliza o haya al menos 1 unidad disponible
+            if contabiliza == 0 or stock_val > 0:
                 existente[3] += 1
             else:
                 messagebox.showwarning("Stock insuficiente", f"No hay más stock disponible para {prod[1]}")
                 return
         else:
             self.carrito.append([prod[0], prod[1], prod[2], 1])  # id, nombre, precio, cantidad
-        # sólo decrementar si no es infinito
-        if stock_val != 999:
+        # sólo decrementar si contabiliza
+        if contabiliza == 1:
             self.stock_dict[prod_id] -= 1
             # Si justo quedó en 5, avisar
             if self.stock_dict[prod_id] == 5:
@@ -328,11 +444,20 @@ class VentasViewNew(tk.Frame):
     def _sumar_item(self, idx):
         prod_id = self.carrito[idx][0]
         stock_val = self._get_stock(prod_id)
-        if stock_val == 999 or (isinstance(stock_val, int) and stock_val > 0):
+        # Si no contabiliza, permitir sumar sin chequear stock; si contabiliza, requerir stock > 0
+        contabiliza = 1
+        try:
+            # buscar el producto actual
+            prod = next((p for p in self.productos if p[0] == prod_id), None)
+            if prod is not None:
+                contabiliza = int(prod[6])
+        except Exception:
+            contabiliza = 1
+        if contabiliza == 0 or (isinstance(stock_val, int) and stock_val > 0):
             # aumentar cantidad en carrito
             self.carrito[idx][3] += 1
-            # decrementar stock real salvo si es infinito (999)
-            if stock_val != 999:
+            # decrementar stock real sólo si contabiliza
+            if contabiliza == 1:
                 self.stock_dict[prod_id] -= 1
                 if self.stock_dict[prod_id] == 5:
                     messagebox.showwarning("Stock bajo", f"Solo quedan 5 unidades de {self.carrito[idx][1]}")
@@ -344,8 +469,13 @@ class VentasViewNew(tk.Frame):
     def _restar_item(self, idx):
         prod_id = self.carrito[idx][0]
         self.carrito[idx][3] -= 1
-        # devolver stock sólo si no es infinito
-        if self.stock_dict.get(prod_id, 0) != 999:
+    # devolver stock sólo si contabiliza
+        try:
+            prod = next((p for p in self.productos if p[0] == prod_id), None)
+            contabiliza = int(prod[6]) if prod is not None else 1
+        except Exception:
+            contabiliza = 1
+        if contabiliza == 1:
             self.stock_dict[prod_id] += 1
         if self.carrito[idx][3] == 0:
             self.carrito.pop(idx)
@@ -356,7 +486,12 @@ class VentasViewNew(tk.Frame):
         # Devolver stock de los productos en el carrito
         for item in self.carrito:
             prod_id, _, _, cantidad = item
-            if self.stock_dict.get(prod_id, 0) != 999:
+            try:
+                prod = next((p for p in self.productos if p[0] == prod_id), None)
+                contabiliza = int(prod[6]) if prod is not None else 1
+            except Exception:
+                contabiliza = 1
+            if contabiliza == 1:
                 self.stock_dict[prod_id] += cantidad
         self.carrito.clear()
         self._draw_productos()
@@ -384,16 +519,31 @@ class VentasViewNew(tk.Frame):
             try:
                 if result and isinstance(result, dict) and 'tickets' in result:
                     fecha = __import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    _printed_ids = []
                     for t in result['tickets']:
                         # llamar al método estático para imprimir cada ticket
                         try:
-                            self.imprimir_ticket_por_item_win32_static(fecha, t.get('producto_nombre'), ticket_id=t.get('ticket_id'), identificador_ticket=t.get('identificador'), codigo_caja=t.get('codigo_caja'))
+                            ok = self.imprimir_ticket_por_item_win32_static(
+                                fecha,
+                                t.get('producto_nombre'),
+                                ticket_id=t.get('ticket_id'),
+                                identificador_ticket=t.get('identificador'),
+                                codigo_caja=t.get('codigo_caja')
+                            )
+                            if ok and t.get('ticket_id'):
+                                _printed_ids.append(t.get('ticket_id'))
                         except Exception:
                             # fallback: intentar el callback genérico si existe
                             try:
                                 self.imprimir_ticket_callback(self.carrito)
                             except Exception:
                                 pass
+                    # Marcar como Impreso los tickets que salieron correctamente
+                    try:
+                        if _printed_ids and callable(self.on_tickets_impresos):
+                            self.on_tickets_impresos(_printed_ids)
+                    except Exception:
+                        pass
                 else:
                     # si no se devolvió info, llamar al callback genérico
                     try:

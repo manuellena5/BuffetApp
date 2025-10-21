@@ -514,7 +514,7 @@ class DetalleCajaFrame(tk.Frame):
                            cd.observaciones_apertura, cd.obs_cierre, cd.total_ventas,
                            cd.total_efectivo_teorico, cd.conteo_efectivo_final, cd.transferencias_final,
                            cd.ingresos, cd.retiros, cd.diferencia, cd.total_tickets, cd.estado,
-                           d.descripcion as nombre_disciplina
+                           d.descripcion as nombre_disciplina, cd.descripcion_evento
                     FROM caja_diaria cd
                     LEFT JOIN disciplinas d ON d.codigo = cd.disciplina
                     WHERE cd.id = ?
@@ -572,6 +572,7 @@ class DetalleCajaFrame(tk.Frame):
                 except Exception:
                     self.tickets_anulados = 0
                 self.nombre_disciplina = caja.get('nombre_disciplina') or ''
+                self.descripcion_evento = caja.get('descripcion_evento') or ''
                 # estado de la caja
                 self.estado = caja.get('estado') or ''
             except Exception:
@@ -625,7 +626,10 @@ class DetalleCajaFrame(tk.Frame):
             try:
                 self.obs_apertura_text.config(state='normal')
                 self.obs_apertura_text.delete('1.0', tk.END)
-                self.obs_apertura_text.insert('1.0', getattr(self, 'observaciones_apertura', ''))
+                texto_ap = getattr(self, 'observaciones_apertura', '')
+                if getattr(self, 'descripcion_evento', ''):
+                    texto_ap = f"Evento: {self.descripcion_evento}\n" + (texto_ap or '')
+                self.obs_apertura_text.insert('1.0', texto_ap)
                 self.obs_apertura_text.config(state='disabled')
             except Exception:
                 pass
@@ -1111,7 +1115,7 @@ class DetalleCajaFrame(tk.Frame):
                 # Cabecera con columnas solicitadas
                 columns = [
                     'Codigo Caja', 'Fecha', 'Hora Apertura', 'Hora Cierre',
-                    'Usuario Apertura', 'Usuario Cierre', 'Disciplina',
+                    'Usuario Apertura', 'Usuario Cierre', 'Disciplina', 'Descripcion evento',
                     'Fondo inicial', 'Total ventas', 'Total efectivo teorico',
                     'Conteo efectivo final', 'Transferencias final', 'Ingresos', 'Retiros',
                     'Diferencia', 'Total tickets', 'Observacion apertura', 'Observacion cierre',
@@ -1169,6 +1173,7 @@ class DetalleCajaFrame(tk.Frame):
                     getattr(self, 'usuario_apertura', ''),
                     getattr(self, 'usuario_cierre', ''),
                     getattr(self, 'nombre_disciplina', ''),
+                    getattr(self, 'descripcion_evento', ''),
                     getattr(self, 'fondo_inicial', self.conteo_entry.get()),
                     getattr(self, 'total_ventas', ''),
                     getattr(self, 'total_teorico', ''),
@@ -1191,7 +1196,7 @@ class DetalleCajaFrame(tk.Frame):
             except Exception:
                 # fallback simple CSV-like TXT
                 with open(filename, 'w', encoding='utf-8') as f:
-                    cols = ['Codigo Caja','Fecha','Hora Apertura','Hora Cierre','Usuario Apertura','Usuario Cierre','Disciplina','Fondo inicial','Total ventas','Total efectivo teorico','Conteo efectivo final','Transferencias final','Ingresos','Retiros','Diferencia','Total tickets','Observacion apertura','Observacion cierre','Movimientos','Items vendidos']
+                    cols = ['Codigo Caja','Fecha','Hora Apertura','Hora Cierre','Usuario Apertura','Usuario Cierre','Disciplina','Descripcion evento','Fondo inicial','Total ventas','Total efectivo teorico','Conteo efectivo final','Transferencias final','Ingresos','Retiros','Diferencia','Total tickets','Observacion apertura','Observacion cierre','Movimientos','Items vendidos']
                     f.write(';'.join(cols) + '\n')
                     try:
                         mov = ' | '.join(self._movimientos_list)
@@ -1231,6 +1236,7 @@ class DetalleCajaFrame(tk.Frame):
                         str(getattr(self, 'usuario_apertura', '')),
                         str(getattr(self, 'usuario_cierre', '')),
                         str(getattr(self, 'nombre_disciplina', '')),
+                        str(getattr(self, 'descripcion_evento', '')),
                         str(getattr(self, 'fondo_inicial', self.conteo_entry.get())),
                         str(getattr(self, 'total_ventas', '')),
                         str(getattr(self, 'total_teorico', '')),
@@ -1455,6 +1461,12 @@ class DetalleCajaFrame(tk.Frame):
                 ticket.append(f"Fecha apertura: {getattr(self, 'fecha', '')} {getattr(self, 'hora_apertura', '')}")
                 ticket.append(f"Usuario apertura: {getattr(self, 'usuario_apertura', '')}")
                 ticket.append(f"Disciplina: {getattr(self, 'nombre_disciplina', '')}")
+                # Mostrar evento si existe
+                try:
+                    if getattr(self, 'descripcion_evento', ''):
+                        ticket.append(f"Evento: {self.descripcion_evento}")
+                except Exception:
+                    pass
                 ticket.append(f"Fecha cierre: {getattr(self, 'fecha', '')} {getattr(self, 'hora_cierre', '')}")
                 ticket.append(f"Usuario cierre: {getattr(self, 'usuario_cierre', '')}")
                 ticket.append("-" * 40)

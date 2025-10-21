@@ -43,15 +43,55 @@ def init_db():
         categoria_id INTEGER,
         visible INTEGER DEFAULT 1,
         color TEXT,
+        orden_visual INTEGER,
         FOREIGN KEY (categoria_id) REFERENCES Categoria_Producto(id)
     )
     ''')
     # Intentar agregar columnas opcionales si no existen
+    # Agrega columnas de texto si faltan (orden_visual se maneja aparte como INTEGER)
     for col in ("color", "codigo_producto"):
         try:
             c.execute(f"ALTER TABLE products ADD COLUMN {col} TEXT")
         except Exception:
             pass
+
+    # Migración: agregar columna contabiliza_stock (1=descuenta, 0=no descuenta)
+    try:
+        c.execute("ALTER TABLE products ADD COLUMN contabiliza_stock INTEGER NOT NULL DEFAULT 1")
+    except Exception:
+        pass
+    # Migración: asegurar columna orden_visual (INTEGER) y valores por defecto
+    try:
+        # Si la columna existe pero está vacía, inicializar basada en id
+        c.execute("PRAGMA table_info(products)")
+        cols = [r[1] for r in c.fetchall()]
+        if 'orden_visual' not in cols:
+            try:
+                c.execute("ALTER TABLE products ADD COLUMN orden_visual INTEGER")
+            except Exception:
+                pass
+        # Inicializar donde esté NULL usando id (orden natural)
+        try:
+            c.execute("UPDATE products SET orden_visual = id WHERE orden_visual IS NULL")
+        except Exception:
+            pass
+        # Normalizar tipo por si quedó almacenado como TEXT en alguna BD vieja
+        try:
+            c.execute("UPDATE products SET orden_visual = CAST(orden_visual AS INTEGER) WHERE orden_visual IS NOT NULL AND typeof(orden_visual)='text'")
+        except Exception:
+            pass
+        # Índice para ordenar rápido en ventas
+        try:
+            c.execute("CREATE INDEX IF NOT EXISTS idx_products_orden_visual ON products(orden_visual)")
+        except Exception:
+            pass
+    except Exception:
+        pass
+    # Si existía la convención stock_actual=999 como stock infinito, migrar a contabiliza_stock=0
+    try:
+        c.execute("UPDATE products SET contabiliza_stock=0 WHERE stock_actual=999")
+    except Exception:
+        pass
 
     # Ventas (una venta puede tener varios tickets)
     c.execute('''
@@ -153,6 +193,7 @@ def init_db():
         usuario_apertura TEXT,
         hora_apertura TEXT NOT NULL,
         fondo_inicial REAL NOT NULL,
+        descripcion_evento TEXT,
         observaciones_apertura TEXT,
         estado TEXT NOT NULL CHECK (estado IN ('abierta','cerrada')),
         hora_cierre TEXT,
@@ -304,6 +345,12 @@ def init_db():
         except Exception:
             pass
 
+    # Migración: agregar columna descripcion_evento si no existe
+    try:
+        c.execute("ALTER TABLE caja_diaria ADD COLUMN descripcion_evento TEXT")
+    except Exception:
+        pass
+
 
     # Usuarios del sistema
     c.execute('''
@@ -371,6 +418,12 @@ def init_db():
         ]
         c.executemany("INSERT INTO products (codigo_producto, nombre, precio_compra, precio_venta, stock_actual, stock_minimo, categoria_id) VALUES (?, ?, ?, ?, ?, ?, ?)", productos)
         print("Productos y categorías cargados")
+
+        # Ajustar contabiliza_stock para los precargados con 999 (no contabiliza)
+        try:
+            c.execute("UPDATE products SET contabiliza_stock=0 WHERE stock_actual=999")
+        except Exception:
+            pass
 
     # Insertar usuarios por defecto si no existen
     c.execute("SELECT COUNT(*) FROM usuarios")

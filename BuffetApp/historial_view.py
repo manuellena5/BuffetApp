@@ -27,6 +27,11 @@ class HistorialView(tk.Frame):
         self.chk_ocultar = tk.Checkbutton(self.frame_filtro_fecha, text="Ocultar anulados", variable=self.var_ocultar_anulados, command=self.on_filtro_cambiado)
         self.chk_ocultar.pack(side=tk.LEFT, padx=5)
 
+        # Checkbox Caja actual
+        self.var_caja_actual = tk.BooleanVar(value=False)
+        self.chk_caja_actual = tk.Checkbutton(self.frame_filtro_fecha, text="Caja actual", variable=self.var_caja_actual, command=self.on_caja_actual_toggle)
+        self.chk_caja_actual.pack(side=tk.LEFT, padx=(12,5))
+
         from theme import apply_treeview_style, FONTS
         style = apply_treeview_style()
         # asegúrate de usar el style namespaced 'App.Treeview' para este Treeview
@@ -104,8 +109,18 @@ class HistorialView(tk.Frame):
 
         # (Removido) Botón Salir local para no interferir con el layout ni duplicar controles
 
-        # cargar historial filtrando por la caja seleccionada por defecto
-        self.on_filtro_cambiado()
+        # Inicialización diferida para asegurar que los combos estén creados
+        self.after(0, self._apply_initial_filters)
+
+    def _apply_initial_filters(self):
+        caja_id = self._get_caja_abierta_id()
+        if caja_id is not None:
+            self.var_caja_actual.set(True)
+            # Deshabilitar combos y cargar con la caja actual
+            self.on_caja_actual_toggle()
+        else:
+            self.var_caja_actual.set(False)
+            self.on_filtro_cambiado()
 
     def actualizar_fechas_combo(self):
         conn = get_connection()
@@ -141,6 +156,15 @@ class HistorialView(tk.Frame):
                 "SELECT id, codigo_caja, estado FROM caja_diaria ORDER BY fecha DESC, hora_apertura DESC",
             )
         self.cajas_rows = cursor.fetchall()
+        # Buscar la primera caja 'abierta' para preseleccionarla
+        current_open_idx = -1
+        for i, row in enumerate(self.cajas_rows):
+            try:
+                if str(row[2]).lower() == 'abierta':
+                    current_open_idx = i
+                    break
+            except Exception:
+                pass
         conn.close()
         cajas_combo = ["Todas"] + [
             f"{row[1]} (abierta)" if row[2] == 'abierta' else row[1] for row in self.cajas_rows
@@ -156,7 +180,11 @@ class HistorialView(tk.Frame):
                 width=25,
             )
             self.combo_caja.pack(side=tk.LEFT, padx=5)
-        self.combo_caja.current(0)
+        # Si hay caja abierta, seleccionarla por defecto; si no, "Todas"
+        if current_open_idx >= 0:
+            self.combo_caja.current(current_open_idx + 1)
+        else:
+            self.combo_caja.current(0)
 
     def _on_fecha_cambiada(self, *args):
         self.actualizar_cajas_combo()
@@ -164,6 +192,11 @@ class HistorialView(tk.Frame):
 
 
     def on_filtro_cambiado(self, *args):
+        # Si está activado "Caja actual", ignorar otros filtros y usar la caja abierta
+        if getattr(self, 'var_caja_actual', None) and self.var_caja_actual.get():
+            caja_id = self._get_caja_abierta_id()
+            self.cargar_historial(None, caja_id, 1)
+            return
         fecha = self.var_fecha.get()
         if fecha == "Mostrar todo" or not fecha:
             fecha = None
@@ -174,13 +207,52 @@ class HistorialView(tk.Frame):
                 caja_id = self.cajas_rows[idx - 1][0]
         self.cargar_historial(fecha, caja_id, 1)
 
-    def cargar_historial(self, fecha_filtrada=None, caja_filtrada=None, pagina=1):
+    def on_caja_actual_toggle(self):
+        # Habilitar/deshabilitar combos según estado del checkbox y aplicar filtro
+        is_current = self.var_caja_actual.get()
         try:
-            # Refresh caja combo to reflect current caja states (may have changed elsewhere)
+            if self.combo_fecha:
+                self.combo_fecha.config(state='disabled' if is_current else 'readonly')
+            if self.combo_caja:
+                self.combo_caja.config(state='disabled' if is_current else 'readonly')
+        except Exception:
+            pass
+        if is_current:
+            # Cargar usando caja abierta
+            caja_id = self._get_caja_abierta_id()
+            self.cargar_historial(None, caja_id, 1)
+        else:
+            # Resetear a "Mostrar todo"/"Todas" y aplicar filtros normales
             try:
-                self.actualizar_cajas_combo()
+                if self.combo_fecha:
+                    self.combo_fecha.current(0)
+                if self.combo_caja:
+                    self.combo_caja.current(0)
             except Exception:
                 pass
+            self.on_filtro_cambiado()
+
+    def _get_caja_abierta_id(self):
+        try:
+            conn = get_connection(); cur = conn.cursor()
+            cur.execute("SELECT id FROM caja_diaria WHERE estado='abierta' ORDER BY fecha DESC, hora_apertura DESC LIMIT 1")
+            row = cur.fetchone(); conn.close()
+            return row[0] if row else None
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            return None
+
+    def cargar_historial(self, fecha_filtrada=None, caja_filtrada=None, pagina=1):
+        try:
+            # Refrescar combos sólo si NO estamos en modo "Caja actual"
+            if not (getattr(self, 'var_caja_actual', None) and self.var_caja_actual.get()):
+                try:
+                    self.actualizar_cajas_combo()
+                except Exception:
+                    pass
             self.filtro_fecha = fecha_filtrada
             self.filtro_caja = caja_filtrada
             conn = get_connection()
@@ -265,9 +337,6 @@ class HistorialView(tk.Frame):
                 venta_id,
                 metodo_pago
             ) = row
-            if codigo_caja != last_caja:
-                current_color = color2 if current_color == color1 else color1
-                last_caja = codigo_caja
             try:
                 monto_str = f"$ {int(round(float(subtotal))):,}".replace(",", ".")
             except Exception:
@@ -472,15 +541,18 @@ class HistorialView(tk.Frame):
             cursor = conn.cursor()
             # Marcar ticket como anulado
             cursor.execute("UPDATE tickets SET status='Anulado' WHERE id=?", (ticket_id,))
-            # Devolver el stock de los productos asociados
+            # Devolver el stock de los productos asociados sólo si contabiliza_stock=1
             cursor.execute("SELECT producto_id, cantidad FROM venta_items WHERE ticket_id=?", (ticket_id,))
             items = cursor.fetchall()
             for prod_id, cantidad in items:
-                cursor.execute("SELECT stock_actual FROM products WHERE id=?", (prod_id,))
-                stock_actual = cursor.fetchone()[0]
-                if stock_actual != 999:
-                    nuevo_stock = stock_actual + cantidad
-                    cursor.execute("UPDATE products SET stock_actual=? WHERE id=?", (nuevo_stock, prod_id))
+                try:
+                    cursor.execute("SELECT COALESCE(contabiliza_stock,1) FROM products WHERE id=?", (prod_id,))
+                    row = cursor.fetchone()
+                    contabiliza = int(row[0]) if row and row[0] is not None else 1
+                except Exception:
+                    contabiliza = 1
+                if contabiliza == 1:
+                    cursor.execute("UPDATE products SET stock_actual = COALESCE(stock_actual,0) + ? WHERE id=?", (cantidad, prod_id))
             conn.commit()
             conn.close()
             self.cargar_historial(self.filtro_fecha, self.filtro_caja, self.pagina_actual)

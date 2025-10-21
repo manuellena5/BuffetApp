@@ -21,6 +21,7 @@ class CajaListadoView(tk.Frame):
 	COLUMNS = [
 		('codigo', 'Código'),
 		('fecha', 'Fecha'),
+		('descripcion_evento', 'Evento'),
 		('usuario', 'Usuario Apertura'),
 		('fondo_inicial', 'Fondo Inicial'),
 		('total_ventas', 'Total Ventas'),
@@ -119,7 +120,7 @@ class CajaListadoView(tk.Frame):
 				" COALESCE(cd.diferencia,0),"
 				" (SELECT COUNT(*) FROM tickets t JOIN ventas v ON v.id=t.venta_id WHERE v.caja_id=cd.id AND t.status!='Anulado') as total_tickets,"
 				" (SELECT COUNT(*) FROM tickets t JOIN ventas v ON v.id=t.venta_id WHERE v.caja_id=cd.id AND t.status='Anulado') as tickets_anulados,"
-				" COALESCE(cd.estado, '')"
+				" COALESCE(cd.estado, ''), COALESCE(cd.descripcion_evento, '')"
 				" FROM caja_diaria cd"
 			)
 			params = []
@@ -132,7 +133,7 @@ class CajaListadoView(tk.Frame):
 			rows = cur.fetchall()
 
 			for row in rows:
-				(cid, codigo, fecha, usuario, fondo_inicial, total_ventas, ventas_efectivo,  transfer, ingresos, retiros, conteo_final, diferencia_db,total_tickets, tickets_anulados, estado) = row
+				(cid, codigo, fecha, usuario, fondo_inicial, total_ventas, ventas_efectivo,  transfer, ingresos, retiros, conteo_final, diferencia_db,total_tickets, tickets_anulados, estado, descripcion_evento) = row
 
 				# Si diferencia guardada es NULL => calcular por la fórmula del negocio
 				if diferencia_db is None:
@@ -148,7 +149,7 @@ class CajaListadoView(tk.Frame):
 					diferencia = diferencia_db or 0
 
 				# Build visible values (omit internal id, append estado)
-				values = [codigo, fecha, usuario, fondo_inicial, total_ventas, ventas_efectivo,  transfer, ingresos, retiros, conteo_final, diferencia,total_tickets, tickets_anulados, estado]
+				values = [codigo, fecha, descripcion_evento, usuario, fondo_inicial, total_ventas, ventas_efectivo,  transfer, ingresos, retiros, conteo_final, diferencia,total_tickets, tickets_anulados, estado]
 				tags = ()
 				if str(estado).lower() == 'abierta':
 					tags = ('abierta',)
