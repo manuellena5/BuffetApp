@@ -53,6 +53,16 @@ CART = {
     'qty_button_font': (FONT_FAMILY, 12),       # botones +/- (aumentado 1 punto)
 }
 
+# Parámetros de la grilla de productos en Ventas
+# Ajustá 'card_width' para hacer las tarjetas más angostas o anchas sin tocar la lógica
+SALES_GRID = {
+    'card_width': 200,   # ancho de cada tarjeta (antes 260)
+    'card_height': 110,  # alto de cada tarjeta
+    'card_padx': 8,      # padding horizontal entre tarjetas
+    'card_pady': 10,     # padding vertical entre tarjetas
+    'columns': 3,        # cantidad de columnas
+}
+
 # Fuentes predefinidas para compatibilidad
 TITLE_FONT = FONTS['title']
 TEXT_FONT = FONTS['normal']

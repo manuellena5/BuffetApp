@@ -2,6 +2,10 @@ import tkinter as tk
 from tkinter import messagebox
 from db_utils import get_connection
 from theme import FONT_FAMILY, CART
+try:
+    from theme import SALES_GRID as _SALES_GRID
+except Exception:
+    _SALES_GRID = None
 
 # Utilidad para cargar productos
 
@@ -115,14 +119,26 @@ class VentasViewNew(tk.Frame):
                 w.destroy()
             except Exception:
                 pass
-        # Medidas y espaciados usados también por Drag & Drop
-        self.card_width = 260
-        self.card_height = 110
-        self.card_padx = 8
-        self.card_pady = 10
+        # Medidas y espaciados (configurables desde theme.SALES_GRID)
+        if _SALES_GRID and isinstance(_SALES_GRID, dict):
+            self.card_width = int(_SALES_GRID.get('card_width', 260))
+            self.card_height = int(_SALES_GRID.get('card_height', 110))
+            self.card_padx = int(_SALES_GRID.get('card_padx', 8))
+            self.card_pady = int(_SALES_GRID.get('card_pady', 10))
+            self.max_cols = int(_SALES_GRID.get('columns', 3))
+        else:
+            self.card_width = 260
+            self.card_height = 110
+            self.card_padx = 8
+            self.card_pady = 10
+            self.max_cols = 3
         self.botones_funcion = []
-        self.max_cols = 3
         self._cards = []
+        # Igualar ancho al original (card_width) para las 3 columnas, sin expansión extra
+        min_col_w = self.card_width + self.card_padx * 2
+        for c in range(self.max_cols):
+            # uniform mantiene las 3 columnas con el mismo ancho base; weight=0 evita que se expandan
+            self.panel_productos.grid_columnconfigure(c, weight=0, uniform='prod', minsize=min_col_w)
         # dibujar todos los productos; el canvas proveerá scroll si no entran
         for idx, prod in enumerate(self.productos):
             # Manejar filas con/sin columna contabiliza_stock
@@ -138,7 +154,14 @@ class VentasViewNew(tk.Frame):
             card = tk.Frame(self.panel_productos, bg="#FFFFFF", bd=2, relief="groove", width=self.card_width, height=self.card_height)
             card.grid(row=fila, column=col, padx=self.card_padx, pady=self.card_pady, sticky="nsew")
             card.grid_propagate(False)
-            name_lbl = tk.Label(card, text=nombre, font=(FONT_FAMILY, 16, "bold"), bg="#FFFFFF", anchor="w")
+            name_lbl = tk.Label(
+                card,
+                text=nombre,
+                font=(FONT_FAMILY, 16, "bold"),
+                bg="#FFFFFF",
+                anchor="w",
+                justify="left"
+            )
             name_lbl.pack(side="top", anchor="w", padx=16, pady=(10,0))
             price_lbl = tk.Label(card, text=f"$ {precio:,.0f}", font=(FONT_FAMILY, 14), fg="#059669", bg="#FFFFFF")
             price_lbl.pack(side="top", anchor="w", padx=16)
