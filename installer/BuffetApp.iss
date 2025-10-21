@@ -1,12 +1,18 @@
 ; Inno Setup script for BuffetApp
 ; Build this after running PyInstaller onedir build
 
+#ifndef MyAppVersion
+	#define MyAppVersion "1.0.0"
+#endif
+
 [Setup]
 AppName=BuffetApp
-AppVersion=1.0.0
+AppVersion={#MyAppVersion}
 DefaultDirName={pf}\BuffetApp
 DefaultGroupName=BuffetApp
+; OutputDir relative to this .iss directory -> installer\dist
 OutputDir=dist
+OutputBaseFilename=BuffetApp_{#MyAppVersion}_Setup
 Compression=lzma
 SolidCompression=no
 ArchitecturesInstallIn64BitMode=x64

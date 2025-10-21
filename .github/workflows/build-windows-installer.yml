@@ -1,0 +1,140 @@
+name: Build Windows Installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Versión (ej: 1.2.3). Si lanzás por tag vX.Y.Z, se ignora."
+        required: false
+        default: "1.0.0"
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    env:
+      APP_VERSION_INPUT: ${{ github.event.inputs.version }}
+      REF_NAME: ${{ github.ref_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies (pip)
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          if (Test-Path "requirements.txt") {
+            python -m pip install -r requirements.txt
+          }
+          if (Test-Path "requirements-min.txt") {
+            python -m pip install -r requirements-min.txt
+          }
+          python -m pip install pyinstaller
+
+      - name: Build with PyInstaller (onedir)
+        shell: pwsh
+        run: |
+          $iconArg = ""
+          if (Test-Path "BuffetApp\img\app.ico") { $iconArg = "--icon BuffetApp\img\app.ico" }
+          if (Test-Path "assets\app.ico") { $iconArg = "--icon assets\app.ico" }
+          if (Test-Path "dist") { Remove-Item -Recurse -Force dist }
+          if (Test-Path "build") { Remove-Item -Recurse -Force build }
+          pyinstaller BuffetApp\main.py `
+            --onedir --windowed --name BuffetApp $iconArg `
+            --add-data "BuffetApp;BuffetApp"
+          if (-not (Test-Path "dist\BuffetApp\BuffetApp.exe")) {
+            throw "No se generó dist\\BuffetApp\\BuffetApp.exe"
+          }
+
+      - name: Add version info and file properties (optional)
+        shell: pwsh
+        run: |
+          # Opcional: incrustar metadatos para reducir falsos positivos de AV
+          # Skippable si no hay herramientas de stamping
+          Write-Host "Metadata stamping step (no-op)"
+
+      - name: Create portable ZIP
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "dist\BuffetApp\*" -DestinationPath "dist\BuffetApp-portable.zip" -Force
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup -y
+          $iscc = "C:\\Program Files (x86)\\Inno Setup 6\\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "No se encontró ISCC.exe" }
+
+      - name: Resolve version for installer
+        id: ver
+        shell: pwsh
+        run: |
+          $v = "${{ env.APP_VERSION_INPUT }}"
+          if ($env:GITHUB_REF -like "refs/tags/*") {
+            $v = "${{ env.REF_NAME }}"
+            if ($v.StartsWith("v")) { $v = $v.Substring(1) }
+          }
+          if ([string]::IsNullOrWhiteSpace($v)) { $v = "1.0.0" }
+          echo "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Build installer (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc = "C:\\Program Files (x86)\\Inno Setup 6\\ISCC.exe"
+          & "$iscc" "/DMyAppVersion=${{ steps.ver.outputs.version }}" "installer\BuffetApp.iss"
+          if ($LASTEXITCODE -ne 0) { throw "Falló Inno Setup" }
+          if (-not (Test-Path "installer\dist")) { throw "No se encontró installer\\dist" }
+
+      # - name: (Opcional) Firmar ejecutables y instalador
+      #   if: ${{ false }}
+      #   shell: pwsh
+      #   env:
+      #     PFX_BASE64: ${{ secrets.CODESIGN_PFX_BASE64 }}
+      #     PFX_PASSWORD: ${{ secrets.CODESIGN_PFX_PASSWORD }}
+      #   run: |
+      #     if (-not $env:PFX_BASE64) { Write-Host "No PFX provided"; exit 0 }
+      #     $pfxPath = "$env:RUNNER_TEMP\codesign.pfx"
+      #     [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:PFX_BASE64))
+      #     $signtool = "C:\\Program Files (x86)\\Windows Kits\\10\\bin\\x64\\signtool.exe"
+      #     if (-not (Test-Path $signtool)) { Write-Host "signtool no encontrado"; exit 0 }
+      #     Get-ChildItem -Path "dist\\BuffetApp" -Filter *.exe | ForEach-Object {
+      #       & $signtool sign /f $pfxPath /p $env:PFX_PASSWORD /tr http://timestamp.sectigo.com /td sha256 /fd sha256 $_.FullName
+      #     }
+      #     Get-ChildItem -Path "installer\\dist" -Filter *.exe | ForEach-Object {
+      #       & $signtool sign /f $pfxPath /p $env:PFX_PASSWORD /tr http://timestamp.sectigo.com /td sha256 /fd sha256 $_.FullName
+      #     }
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: BuffetApp-${{ steps.ver.outputs.version }}-artifacts
+          path: |
+            dist\BuffetApp-portable.zip
+            installer\dist\*.exe
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build-windows
+    runs-on: windows-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: BuffetApp-${{ github.ref_name }}-artifacts
+          path: artifacts
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts\BuffetApp-portable.zip
+            artifacts\*.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

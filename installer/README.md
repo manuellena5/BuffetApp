@@ -39,6 +39,9 @@ Notas:
    ```
 - Alternativa de build con menos detecciones: Nuitka (tarea "Build EXE (Nuitka onedir)").
 - Evitá ejecutar desde Descargas/Temp; instalá en `C:\Program Files\BuffetApp`.
+ - Usá build onedir (ya aplicado) en lugar de onefile para reducir heurísticas.
+ - Podés excluir la carpeta de instalación en tu antivirus si hay falsos positivos.
+ - Si tenés certificado de firma, podés firmar también el instalador en `installer\dist\*.exe`.
 
 ## 6) Probar en otra PC
 - Copiá `dist/BuffetApp/` y ejecutá `BuffetApp.exe`, o instalá con el `.exe` de Inno Setup.
