@@ -146,15 +146,25 @@ class HistorialView(tk.Frame):
         conn = get_connection()
         cursor = conn.cursor()
         fecha = self.var_fecha.get()
+        # Si rol=cajero, limitar a sus cajas
+        where_parts = []
+        params = []
+        try:
+            if getattr(self, 'logged_role', '').lower() == 'cajero':
+                user = getattr(self, 'logged_user', None)
+                if user:
+                    where_parts.append('usuario_apertura = ?')
+                    params.append(user)
+        except Exception:
+            pass
         if fecha and fecha != "Mostrar todo":
-            cursor.execute(
-                "SELECT id, codigo_caja, estado FROM caja_diaria WHERE fecha=? ORDER BY hora_apertura",
-                (fecha,),
-            )
-        else:
-            cursor.execute(
-                "SELECT id, codigo_caja, estado FROM caja_diaria ORDER BY fecha DESC, hora_apertura DESC",
-            )
+            where_parts.append('fecha = ?')
+            params.append(fecha)
+        where_clause = (' WHERE ' + ' AND '.join(where_parts)) if where_parts else ''
+        cursor.execute(
+            f"SELECT id, codigo_caja, estado FROM caja_diaria{where_clause} ORDER BY fecha DESC, hora_apertura DESC",
+            params,
+        )
         self.cajas_rows = cursor.fetchall()
         # Buscar la primera caja 'abierta' para preseleccionarla
         current_open_idx = -1
@@ -235,7 +245,15 @@ class HistorialView(tk.Frame):
     def _get_caja_abierta_id(self):
         try:
             conn = get_connection(); cur = conn.cursor()
-            cur.execute("SELECT id FROM caja_diaria WHERE estado='abierta' ORDER BY fecha DESC, hora_apertura DESC LIMIT 1")
+            # Para cajero, sólo su caja abierta si la hay
+            if getattr(self, 'logged_role', '').lower() == 'cajero':
+                user = getattr(self, 'logged_user', None)
+                if user:
+                    cur.execute("SELECT id FROM caja_diaria WHERE estado='abierta' AND usuario_apertura=? ORDER BY fecha DESC, hora_apertura DESC LIMIT 1", (user,))
+                else:
+                    cur.execute("SELECT id FROM caja_diaria WHERE estado='abierta' ORDER BY fecha DESC, hora_apertura DESC LIMIT 1")
+            else:
+                cur.execute("SELECT id FROM caja_diaria WHERE estado='abierta' ORDER BY fecha DESC, hora_apertura DESC LIMIT 1")
             row = cur.fetchone(); conn.close()
             return row[0] if row else None
         except Exception:
@@ -276,6 +294,15 @@ class HistorialView(tk.Frame):
             if caja_filtrada:
                 filtros.append("v.caja_id = ?")
                 params.append(caja_filtrada)
+            # Rol cajero: limitar a sus cajas si no se está en Caja actual
+            try:
+                if getattr(self, 'logged_role', '').lower() == 'cajero' and not (getattr(self, 'var_caja_actual', None) and self.var_caja_actual.get()):
+                    user = getattr(self, 'logged_user', None)
+                    if user:
+                        filtros.append("cd.usuario_apertura = ?")
+                        params.append(user)
+            except Exception:
+                pass
             if self.var_ocultar_anulados.get():
                 filtros.append("t.status != 'Anulado'")
 

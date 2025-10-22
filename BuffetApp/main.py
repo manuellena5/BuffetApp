@@ -35,12 +35,14 @@ class BarCanchaApp:
                 cur = conn.cursor()
                 cur.execute(f"UPDATE tickets SET status='Impreso' WHERE id IN ({placeholders})", ids)
                 conn.commit()
-        except Exception:
+        except Exception as e:
             # No bloquear el flujo por errores de marcado; loguear si hay logger
             try:
-                log_error("No se pudieron marcar tickets como Impreso", "marcar_tickets_impresos")
+                fecha_hora = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                log_error(fecha_hora, 'marcar_tickets_impresos', f'Error: {e}')
             except Exception:
                 pass
+
     def __init__(self, root):
         import json, os, threading
         self.root = root
@@ -149,6 +151,16 @@ class BarCanchaApp:
         # Herramientas como último elemento del menú
         self.menu_bar.add_cascade(label="Herramientas", menu=self.herramientas_menu)
 
+        # Menú de Usuarios (solo administrador; se habilita post-login)
+        self.usuarios_menu = tk.Menu(self.menu_bar, tearoff=0)
+        self.menu_bar.add_cascade(label="Usuarios", menu=self.usuarios_menu)
+        self.usuarios_menu.add_command(label="ABM Usuarios", command=self.mostrar_usuarios)
+
+        # Menú de sesión: permite cerrar sesión y volver a la pantalla de login
+        self.sesion_menu = tk.Menu(self.menu_bar, tearoff=0)
+        self.sesion_menu.add_command(label="Cerrar sesión", command=self.cerrar_sesion)
+        self.menu_bar.add_cascade(label="Sesión", menu=self.sesion_menu)
+
         self.logged_user = None
         self.logged_role = None
 
@@ -164,7 +176,7 @@ class BarCanchaApp:
         self.productos_view = None
 
         self.caja_abierta_id = None
-        
+
         self.ocultar_frames()
         # Import tardío para reducir costo inicial
         from login_view import LoginView  # noqa: E402 (import tardío intencional)
@@ -205,6 +217,7 @@ class BarCanchaApp:
         self.herramientas_menu.entryconfig("Config. Impresora", state=tk.NORMAL)
         # (Eliminado) habilitación de "Backup local (AppData)"
         self.herramientas_menu.entryconfig("Backups y Sincronización", state=tk.NORMAL)
+        # Usuarios: visibilidad se ajusta post-login según rol
 
 
     def actualizar_menu_caja(self):
@@ -369,22 +382,189 @@ class BarCanchaApp:
         # Mostrar la barra de menú una vez autenticado el usuario
         self.root.config(menu=self.menu_bar)
         self.habilitar_menu()
+        # Ajustar menú según rol
+        try:
+            if str(rol).lower() == 'administrador':
+                self.menu_bar.entryconfig('Usuarios', state=tk.NORMAL)
+            else:
+                self.menu_bar.entryconfig('Usuarios', state=tk.DISABLED)
+        except Exception:
+            pass
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT id, codigo_caja FROM caja_diaria WHERE estado='abierta'")
         rows = cursor.fetchall()
         conn.close()
 
-        if not rows:
-            messagebox.showinfo("Caja", "No hay caja abierta. Abra una caja desde el menú Caja para habilitar ventas.")
+        # Regla: si inicia como Cajero y hay una o más cajas abiertas, NO permitir abrir otra;
+        # pedir autenticación de Administrador para cerrar la(s) abierta(s)
+        if str(rol).lower() == 'cajero' and rows:
             self.caja_abierta_id = None
-        elif len(rows) == 1:
-            self.caja_abierta_id = rows[0][0]
+            try:
+                self._pedir_admin_para_cerrar_caja(rows)
+            except Exception:
+                # Si el flujo falla, informar y continuar sin caja abierta
+                messagebox.showwarning("Caja", "Hay cajas abiertas. Un administrador debe cerrarlas para continuar.")
         else:
-            self.resolver_cajas_abiertas(rows)
+            if not rows:
+                messagebox.showinfo("Caja", "No hay caja abierta. Abra una caja desde el menú Caja para habilitar ventas.")
+                self.caja_abierta_id = None
+            elif len(rows) == 1:
+                self.caja_abierta_id = rows[0][0]
+            else:
+                self.resolver_cajas_abiertas(rows)
 
         self.actualizar_menu_caja()
         self.mostrar_menu_principal()
+
+    def cerrar_sesion(self):
+        """Cierra la sesión actual y vuelve a la pantalla de login"""
+        try:
+            # Limpiar estado de usuario y caja
+            self.logged_user = None
+            self.logged_role = None
+            self.caja_abierta_id = None
+            # Ocultar todas las vistas y quitar menú
+            self.ocultar_frames()
+            self.root.config(menu=None)
+            # Volver a mostrar login
+            try:
+                self.login_view.destroy()
+            except Exception:
+                pass
+            from login_view import LoginView
+            self.login_view = LoginView(self.root, self.on_login)
+            self.login_view.pack(fill=tk.BOTH, expand=True)
+        except Exception as e:
+            messagebox.showerror("Sesión", f"No se pudo cerrar sesión. {e}")
+
+    def _pedir_admin_para_cerrar_caja(self, open_rows):
+        """Muestra un modal para autenticación de administrador y, si es correcta,
+        abre la vista de cierre para la(s) caja(s) abierta(s).
+
+        open_rows: lista de (id, codigo_caja) para cajas con estado='abierta'
+        """
+        win = tk.Toplevel(self.root)
+        win.title("Cierre requerido por Administrador")
+        ancho, alto = 420, 220
+        x = self.root.winfo_screenwidth() // 2 - ancho // 2
+        y = self.root.winfo_screenheight() // 2 - alto // 2
+        win.geometry(f"{ancho}x{alto}+{x}+{y}")
+        win.transient(self.root)
+        win.grab_set()
+
+        tk.Label(win, text="Hay cajas abiertas. Se requiere un Administrador para cerrarlas.", font=("Arial", 11)).pack(pady=(12, 8))
+        form = tk.Frame(win)
+        form.pack(pady=6)
+        tk.Label(form, text="Usuario admin:").grid(row=0, column=0, sticky='w')
+        entry_user = tk.Entry(form)
+        entry_user.grid(row=1, column=0, pady=(0,8))
+        tk.Label(form, text="Contraseña:").grid(row=2, column=0, sticky='w')
+        entry_pass = tk.Entry(form, show='*')
+        entry_pass.grid(row=3, column=0)
+
+        btns = tk.Frame(win)
+        btns.pack(pady=10)
+
+        def autenticar_y_abrir():
+            usuario_admin = entry_user.get().strip()
+            pass_admin = entry_pass.get().strip()
+            if not usuario_admin or not pass_admin:
+                messagebox.showwarning('Administrador', 'Ingrese usuario y contraseña.'); return
+            # validar credenciales con rol Administrador
+            try:
+                conn = get_connection(); cur = conn.cursor()
+                cur.execute("SELECT rol FROM usuarios WHERE usuario=? AND password=?", (usuario_admin, pass_admin))
+                row = cur.fetchone(); conn.close()
+            except Exception as e:
+                messagebox.showerror('Administrador', f'Error de base de datos: {e}'); return
+            if not row or str(row[0]).lower() != 'administrador':
+                messagebox.showerror('Administrador', 'Credenciales inválidas o sin rol Administrador.'); return
+            # Autenticación OK: abrir UI de cierre con usuario del sistema = admin temporal
+            win.destroy()
+            # Guardar sesión original del cajero
+            orig_user = self.logged_user; orig_role = self.logged_role
+            try:
+                # Elevar temporalmente a admin para que el cierre registre usuario_cierre correcto
+                self.logged_user = usuario_admin
+                self.logged_role = 'Administrador'
+                # Si hay una sola caja abierta, abrir su detalle directamente; si hay varias, resolver selección
+                if len(open_rows) == 1:
+                    self.abrir_cierre_para_caja(open_rows[0][0], restore_session=(orig_user, orig_role))
+                else:
+                    # mostrar selector; al finalizar (on_close) restaurar sesión
+                    self._abrir_selector_cajas_para_admin(open_rows, restore_session=(orig_user, orig_role))
+            except Exception:
+                # ante cualquier problema, restaurar sesión original
+                self.logged_user = orig_user; self.logged_role = orig_role
+
+        tk.Button(btns, text="Autenticar y cerrar", command=autenticar_y_abrir, bg="#1976d2", fg="white").pack(side=tk.LEFT, padx=6)
+        tk.Button(btns, text="Cancelar", command=win.destroy).pack(side=tk.LEFT, padx=6)
+
+    def _abrir_selector_cajas_para_admin(self, rows, restore_session=None):
+        """Permite al admin seleccionar una de las cajas abiertas para ver/cerrar su detalle."""
+        # Reutilizar la ventana existente de resolución pero forzando el flujo a abrir detalle en lugar de "usar caja"
+        sel_win = tk.Toplevel(self.root)
+        sel_win.title("Cajas abiertas")
+        tk.Label(sel_win, text="Seleccione la caja a cerrar:" ).pack(padx=10, pady=5)
+        lista = tk.Listbox(sel_win, width=48)
+        lista.pack(padx=10, pady=5)
+        for cid, codigo in rows:
+            lista.insert(tk.END, f"{codigo} (id {cid})")
+
+        def abrir_detalle():
+            sel = lista.curselection()
+            if not sel:
+                messagebox.showwarning("Caja", "Debe seleccionar una caja.")
+                return
+            caja_id = rows[sel[0]][0]
+            sel_win.destroy()
+            self.abrir_cierre_para_caja(caja_id, restore_session=restore_session)
+
+        tk.Button(sel_win, text="Abrir detalle", command=abrir_detalle).pack(pady=10)
+        sel_win.grab_set()
+        self.root.wait_window(sel_win)
+
+    def abrir_cierre_para_caja(self, caja_id, restore_session=None):
+        """Abre la vista de detalle/cierre para la caja indicada.
+        Si restore_session es una tupla (user, role), se restaurará al cerrar la caja o al volver de la vista.
+        """
+        try:
+            from caja_listado_view import CajaListadoView
+        except Exception:
+            from caja_listado_view import CajaListadoView
+        self.ocultar_frames()
+        # Vista temporal para el cierre
+        self.cajas_view = CajaListadoView(self.root, self.on_caja_cerrada)
+        # Propagar usuario/rol actuales (admin temporal)
+        try:
+            self.cajas_view.logged_user = getattr(self, 'logged_user', None)
+            self.cajas_view.logged_role = getattr(self, 'logged_role', None)
+        except Exception:
+            pass
+        # Envolver callback para restaurar sesión si corresponde
+        if restore_session is not None:
+            orig_user, orig_role = restore_session
+            def _restore_and_callback(*args, **kwargs):
+                try:
+                    self.logged_user = orig_user
+                    self.logged_role = orig_role
+                except Exception:
+                    pass
+                try:
+                    self.on_caja_cerrada(*args, **kwargs)
+                except Exception:
+                    pass
+            try:
+                self.cajas_view.on_caja_cerrada = _restore_and_callback
+            except Exception:
+                pass
+        # Mostrar detalle directamente
+        try:
+            self.cajas_view.ver_detalle(caja_id)
+        except Exception:
+            pass
+        self.cajas_view.pack(fill=tk.BOTH, expand=True)
 
     # abrir_backup_confirm eliminado: backup se gestiona desde Herramientas → Backups y Sincronización
 
@@ -475,6 +655,12 @@ class BarCanchaApp:
             self.informe_view.pack_forget()
         if self.productos_view:
             self.productos_view.pack_forget()
+        # Asegurar ocultar Usuarios para evitar superposición de pantallas
+        if getattr(self, 'usuarios_view', None):
+            try:
+                self.usuarios_view.pack_forget()
+            except Exception:
+                pass
         if self.ajustes_view:
             try:
                 self.ajustes_view.pack_forget()
@@ -485,6 +671,11 @@ class BarCanchaApp:
         if not self.cajas_view:
             from caja_listado_view import CajaListadoView  # lazy import
             self.cajas_view = CajaListadoView(self.root, self.on_caja_cerrada)
+            try:
+                self.cajas_view.logged_user = getattr(self, 'logged_user', None)
+                self.cajas_view.logged_role = getattr(self, 'logged_role', None)
+            except Exception:
+                pass
         self.ocultar_frames()
         self.cajas_view.pack(fill=tk.BOTH, expand=True)
         self.mostrar_pie_caja(self.cajas_view)  # si tenés este pie en otras vistas
@@ -508,6 +699,21 @@ class BarCanchaApp:
             pass
         self.menu_view.pack(fill=tk.BOTH, expand=True)
         self.mostrar_pie_caja(self.menu_view)
+
+    def mostrar_usuarios(self):
+        # Solo admin
+        if str(getattr(self, 'logged_role', '')).lower() != 'administrador':
+            messagebox.showwarning('Usuarios', 'No tiene permisos para acceder a Usuarios.')
+            return
+        try:
+            self.ocultar_frames()
+            from usuarios_view import UsuariosView
+            self.usuarios_view = getattr(self, 'usuarios_view', None)
+            if self.usuarios_view is None:
+                self.usuarios_view = UsuariosView(self.root)
+            self.usuarios_view.pack(fill=tk.BOTH, expand=True)
+        except Exception as e:
+            messagebox.showerror('Usuarios', f'No se pudo abrir Usuarios.\n{e}')
 
     def mostrar_pie_caja(self, parent):
         # Elimina barras previas si existen
@@ -715,6 +921,11 @@ class BarCanchaApp:
         if not self.historial_view:
             from historial_view import HistorialView  # lazy import
             self.historial_view = HistorialView(self.root)
+            try:
+                self.historial_view.logged_user = getattr(self, 'logged_user', None)
+                self.historial_view.logged_role = getattr(self, 'logged_role', None)
+            except Exception:
+                pass
         self.ocultar_frames()
         self.historial_view.pack(fill=tk.BOTH, expand=True)
         # Asegurar que los botones de paginación/filtro estén visibles
@@ -927,6 +1138,22 @@ class BarCanchaApp:
     def abrir_caja_window(self):
         import datetime
         from tkinter import ttk
+        # Si es cajero y ya hay una caja abierta en el sistema, forzar flujo de admin
+        try:
+            if str(getattr(self, 'logged_role', '')).lower() == 'cajero':
+                with get_connection() as _conn:
+                    _cur = _conn.cursor()
+                    _cur.execute("SELECT id, codigo_caja FROM caja_diaria WHERE estado='abierta'")
+                    _rows = _cur.fetchall()
+                if _rows:
+                    messagebox.showwarning('Caja', 'Ya existe una caja abierta. Un administrador debe cerrarla para abrir una nueva.')
+                    try:
+                        self._pedir_admin_para_cerrar_caja(_rows)
+                    except Exception:
+                        pass
+                    return
+        except Exception:
+            pass
         win = tk.Toplevel(self.root)
         win.title("Apertura de Caja")
         ancho = 370
@@ -936,7 +1163,7 @@ class BarCanchaApp:
         win.geometry(f"{ancho}x{alto}+{x}+{y}")
         win.transient(self.root)
         win.grab_set()
-        tk.Label(win, text="Usuario apertura:", font=("Arial", 12)).pack(pady=6)
+        tk.Label(win, text="Cajero apertura:", font=("Arial", 12)).pack(pady=6)
 
         def _limit_entry(max_len):
             return (win.register(lambda P: len(P) <= max_len), "%P")
@@ -947,7 +1174,9 @@ class BarCanchaApp:
             validate="key",
             validatecommand=_limit_entry(10),
         )
-        entry_usuario.insert(0, self.logged_user or "")
+        # Este campo representa el nombre de la persona que oficia de cajero al abrir
+        # No se autocompleta con el usuario del sistema para permitir ingresar el nombre del cajero humano.
+        entry_usuario.insert(0, "")
         entry_usuario.pack(pady=2)
         tk.Label(win, text="Fondo inicial:", font=("Arial", 12)).pack(pady=6)
         entry_fondo = tk.Entry(win, font=("Arial", 12))
@@ -1030,7 +1259,8 @@ class BarCanchaApp:
         entry_obs.bind("<KeyRelease>", lambda e: limitar_texto(entry_obs, 30))
 
         def confirmar():
-            usuario = entry_usuario.get().strip()
+            cajero_apertura = entry_usuario.get().strip()
+            usuario_apertura = (self.logged_user or "")
             fondo = entry_fondo.get().strip().replace(",", ".")
             observaciones = entry_obs.get("1.0", tk.END).strip()
             descripcion_evento = entry_evento.get().strip()
@@ -1046,10 +1276,10 @@ class BarCanchaApp:
             sel_row = _pos_cajas_rows[sel_idx] if _pos_cajas_rows else (None, 'Caja1', 'Caj01', 1)
             pos_caja_id = sel_row[0]
             caja_prefijo = sel_row[2]
-            if not usuario or not fondo:
-                messagebox.showwarning("Datos incompletos", "Complete usuario y fondo inicial.")
+            if not cajero_apertura or not fondo:
+                messagebox.showwarning("Datos incompletos", "Complete el Cajero de apertura y el fondo inicial.")
                 return
-            if len(usuario) > 10:
+            if len(cajero_apertura) > 10:
                 messagebox.showwarning("Usuario", "Máximo 10 caracteres.")
                 return
             try:
@@ -1091,8 +1321,8 @@ class BarCanchaApp:
             # Intentar insertar con pos_uuid y caja_uuid si las columnas existen (migración las crea)
             try:
                 cursor.execute(
-                    "INSERT INTO caja_diaria (codigo_caja, disciplina, fecha, usuario_apertura, hora_apertura, apertura_dt, fondo_inicial, descripcion_evento, observaciones_apertura, estado, pos_uuid, caja_uuid, pos_caja_id, caja_prefijo) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'abierta', ?, ?, ?, ?)",
-                    (codigo_caja, disciplina, fecha, usuario, hora_apertura, f"{fecha} {hora_apertura}", fondo_val, descripcion_evento, observaciones, pos_uuid, caja_uuid, pos_caja_id, caja_prefijo)
+                    "INSERT INTO caja_diaria (codigo_caja, disciplina, fecha, usuario_apertura, cajero_apertura, hora_apertura, apertura_dt, fondo_inicial, descripcion_evento, observaciones_apertura, estado, pos_uuid, caja_uuid, pos_caja_id, caja_prefijo) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'abierta', ?, ?, ?, ?)",
+                    (codigo_caja, disciplina, fecha, usuario_apertura, cajero_apertura, hora_apertura, f"{fecha} {hora_apertura}", fondo_val, descripcion_evento, observaciones, pos_uuid, caja_uuid, pos_caja_id, caja_prefijo)
                 )
             except Exception:
                 # Fallback: columnas no existen en bases viejas
@@ -1102,9 +1332,17 @@ class BarCanchaApp:
                     )
                 except Exception:
                     pass
-                cursor.execute(
-                    "INSERT INTO caja_diaria (codigo_caja, disciplina, fecha, usuario_apertura, hora_apertura, apertura_dt, fondo_inicial, descripcion_evento, observaciones_apertura, estado) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'abierta')",
-                    (codigo_caja, disciplina, fecha, usuario, hora_apertura, f"{fecha} {hora_apertura}", fondo_val, descripcion_evento, observaciones))
+                # Intentar agregar cajero_apertura si existe; si no, omitir y luego actualizar
+                try:
+                    cursor.execute(
+                        "INSERT INTO caja_diaria (codigo_caja, disciplina, fecha, usuario_apertura, cajero_apertura, hora_apertura, apertura_dt, fondo_inicial, descripcion_evento, observaciones_apertura, estado) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'abierta')",
+                        (codigo_caja, disciplina, fecha, usuario_apertura, cajero_apertura, hora_apertura, f"{fecha} {hora_apertura}", fondo_val, descripcion_evento, observaciones)
+                    )
+                except Exception:
+                    cursor.execute(
+                        "INSERT INTO caja_diaria (codigo_caja, disciplina, fecha, usuario_apertura, hora_apertura, apertura_dt, fondo_inicial, descripcion_evento, observaciones_apertura, estado) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'abierta')",
+                        (codigo_caja, disciplina, fecha, usuario_apertura, hora_apertura, f"{fecha} {hora_apertura}", fondo_val, descripcion_evento, observaciones)
+                    )
             caja_id = cursor.lastrowid
             conn.commit()
             conn.close()
@@ -1462,7 +1700,7 @@ class BarCanchaApp:
 
         try:
             ahora = datetime.datetime.now().strftime("%H:%M:%S")
-            usuario_cierre = getattr(self, "usuario_logueado", "") or ""
+            usuario_cierre = getattr(self, 'logged_user', None) or getattr(self, "usuario_logueado", "") or ""
             conn = get_connection(); c = conn.cursor()
             c.execute("""
                 UPDATE caja_diaria

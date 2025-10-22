@@ -22,7 +22,7 @@ class CajaListadoView(tk.Frame):
 		('codigo', 'Código'),
 		('fecha', 'Fecha'),
 		('descripcion_evento', 'Evento'),
-		('usuario', 'Usuario Apertura'),
+		('usuario', 'Cajero Apertura'),
 		('fondo_inicial', 'Fondo Inicial'),
 		('total_ventas', 'Total Ventas'),
 		('ventas_efectivo', 'Ventas Efectivo'),
@@ -96,7 +96,7 @@ class CajaListadoView(tk.Frame):
 			cur = conn.cursor()
 			# Base query
 			query = (
-				"SELECT cd.id, cd.codigo_caja, cd.fecha, cd.usuario_apertura, COALESCE(cd.fondo_inicial,0),"
+					"SELECT cd.id, cd.codigo_caja, cd.fecha, COALESCE(cd.cajero_apertura, cd.usuario_apertura) as cajero_apertura, COALESCE(cd.fondo_inicial,0),"
 				" (SELECT COALESCE(SUM(t.total_ticket),0) FROM tickets t JOIN ventas v ON v.id=t.venta_id WHERE v.caja_id=cd.id AND t.status!='Anulado') as total_ventas,"
 				# Ventas en efectivo: siempre por método de pago efectivo
 				" (SELECT COALESCE(SUM(t.total_ticket),0) FROM tickets t JOIN ventas v ON v.id=t.venta_id LEFT JOIN metodos_pago mp ON mp.id=v.metodo_pago_id WHERE v.caja_id=cd.id AND t.status!='Anulado' AND (LOWER(mp.descripcion) LIKE 'efectivo%' OR LOWER(mp.descripcion)='efectivo')) as ventas_efectivo,"
@@ -124,6 +124,18 @@ class CajaListadoView(tk.Frame):
 				" FROM caja_diaria cd"
 			)
 			params = []
+			# Si el rol es cajero, limitar a sus cajas
+			try:
+				if getattr(self, 'logged_role', '').lower() == 'cajero':
+					user = getattr(self, 'logged_user', None)
+					if user:
+						if 'WHERE' in query:
+							query += " AND cd.usuario_apertura = ?"
+						else:
+							query += " WHERE cd.usuario_apertura = ?"
+						params.append(user)
+			except Exception:
+				pass
 			if self._filter_date:
 				query += " WHERE cd.fecha = ? ORDER BY cd.fecha DESC, cd.codigo_caja DESC"
 				params.append(self._filter_date)

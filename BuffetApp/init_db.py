@@ -191,6 +191,7 @@ def init_db():
         disciplina TEXT,
         fecha TEXT NOT NULL,
         usuario_apertura TEXT,
+        cajero_apertura TEXT,
         hora_apertura TEXT NOT NULL,
         fondo_inicial REAL NOT NULL,
         descripcion_evento TEXT,
@@ -198,6 +199,7 @@ def init_db():
         estado TEXT NOT NULL CHECK (estado IN ('abierta','cerrada')),
         hora_cierre TEXT,
         usuario_cierre TEXT,
+        cajero_cierre TEXT,
         apertura_dt TEXT,
         cierre_dt TEXT,
         total_ventas REAL,
@@ -351,6 +353,39 @@ def init_db():
     except Exception:
         pass
 
+    # Migración: agregar columnas cajero_apertura y cajero_cierre si no existen
+    try:
+        c.execute("PRAGMA table_info(caja_diaria)")
+        cols = [r[1] for r in c.fetchall()]
+        if 'cajero_apertura' not in cols:
+            try:
+                c.execute("ALTER TABLE caja_diaria ADD COLUMN cajero_apertura TEXT")
+            except Exception:
+                pass
+        if 'cajero_cierre' not in cols:
+            try:
+                c.execute("ALTER TABLE caja_diaria ADD COLUMN cajero_cierre TEXT")
+            except Exception:
+                pass
+        # Sincronización con nube: columnas auxiliares
+        if 'nube_enviado' not in cols:
+            try:
+                c.execute("ALTER TABLE caja_diaria ADD COLUMN nube_enviado INTEGER DEFAULT 0")
+            except Exception:
+                pass
+        if 'nube_uuid' not in cols:
+            try:
+                c.execute("ALTER TABLE caja_diaria ADD COLUMN nube_uuid TEXT")
+            except Exception:
+                pass
+        if 'enviado_nube_ts' not in cols:
+            try:
+                c.execute("ALTER TABLE caja_diaria ADD COLUMN enviado_nube_ts TEXT")
+            except Exception:
+                pass
+    except Exception:
+        pass
+
 
     # Usuarios del sistema
     c.execute('''
@@ -361,6 +396,24 @@ def init_db():
         rol TEXT NOT NULL
     )
     ''')
+    # Migración: columna ACTIVO para borrado lógico
+    try:
+        c.execute("PRAGMA table_info(usuarios)")
+        ucols = [r[1] for r in c.fetchall()]
+        if 'activo' not in ucols:
+            try:
+                c.execute("ALTER TABLE usuarios ADD COLUMN activo INTEGER NOT NULL DEFAULT 1")
+                # Inicializar todos como activos
+                c.execute("UPDATE usuarios SET activo=1 WHERE activo IS NULL")
+            except Exception:
+                pass
+        # Índice opcional por activo
+        try:
+            c.execute("CREATE INDEX IF NOT EXISTS idx_usuarios_activo ON usuarios(activo)")
+        except Exception:
+            pass
+    except Exception:
+        pass
 
     # Tabla de disciplinas
     c.execute('''
@@ -428,8 +481,8 @@ def init_db():
     # Insertar usuarios por defecto si no existen
     c.execute("SELECT COUNT(*) FROM usuarios")
     if c.fetchone()[0] == 0:
-        c.execute("INSERT INTO usuarios (usuario, password, rol) VALUES (?, ?, ?)", ("admin", "admin123", "administrador"))
-        c.execute("INSERT INTO usuarios (usuario, password, rol) VALUES (?, ?, ?)", ("cajero", "cajero123", "cajero"))
+        c.execute("INSERT INTO usuarios (usuario, password, rol, activo) VALUES (?, ?, ?, 1)", ("admin", "admin123", "administrador"))
+        c.execute("INSERT INTO usuarios (usuario, password, rol, activo) VALUES (?, ?, ?, 1)", ("cajero", "cajero123", "cajero"))
 
     conn.commit()
     
