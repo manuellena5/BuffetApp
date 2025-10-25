@@ -222,6 +222,19 @@ class DetalleCajaFrame(tk.Frame):
         )
         closure_frame.grid(row=0, column=1, rowspan=2, sticky="nsew", padx=(15, 0))
 
+        # Mostrar Disciplina en el panel de cierre
+        try:
+            self.disciplina_label = tk.Label(
+                closure_frame,
+                text="Disciplina: -",
+                bg=COLORS['surface'],
+                font=(FONTS['normal'][0], max(FONTS['normal'][1] - 1, 10)),
+                fg=COLORS.get('text', '#000')
+            )
+            self.disciplina_label.pack(anchor='w', pady=(8, 2))
+        except Exception:
+            pass
+
         # Título/observaciones de apertura (solo lectura)
         label_bigger_font = (FONTS['normal'][0], max(FONTS['normal'][1] - 1, 10))
         tk.Label(
@@ -640,6 +653,12 @@ class DetalleCajaFrame(tk.Frame):
                     texto_ap = f"Evento: {self.descripcion_evento}\n" + (texto_ap or '')
                 self.obs_apertura_text.insert('1.0', texto_ap)
                 self.obs_apertura_text.config(state='disabled')
+            except Exception:
+                pass
+            # Actualizar etiqueta de disciplina en el panel de cierre
+            try:
+                nombre = getattr(self, 'nombre_disciplina', '') or '-'
+                self.disciplina_label.config(text=f"Disciplina: {nombre}")
             except Exception:
                 pass
             # Listar movimientos y sus observaciones en el textbox correspondiente

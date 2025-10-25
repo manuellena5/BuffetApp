@@ -437,6 +437,32 @@ def init_db():
             disciplinas,
         )
    
+    # Overrides del día por disciplina para productos (precio/visibilidad/stock del día)
+    try:
+        c.execute('''
+        CREATE TABLE IF NOT EXISTS pos_producto_dia (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fecha TEXT NOT NULL,
+            disciplina TEXT NOT NULL,
+            producto_id INTEGER NOT NULL,
+            precio_venta_dia REAL,
+            visible INTEGER NOT NULL DEFAULT 1,
+            stock_dia INTEGER,
+            creado_ts TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY(producto_id) REFERENCES products(id)
+        )
+        ''')
+        # Índices útiles
+        try:
+            c.execute("CREATE INDEX IF NOT EXISTS idx_ppd_fecha_disciplina ON pos_producto_dia(fecha, disciplina)")
+        except Exception:
+            pass
+        try:
+            c.execute("CREATE INDEX IF NOT EXISTS idx_ppd_prod_fecha_disciplina ON pos_producto_dia(producto_id, fecha, disciplina)")
+        except Exception:
+            pass
+    except Exception:
+        pass
 
     # Insertar productos si no hay nada
     c.execute("SELECT COUNT(*) FROM products")

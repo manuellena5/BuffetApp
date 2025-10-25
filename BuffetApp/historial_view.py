@@ -16,12 +16,19 @@ class HistorialView(tk.Frame):
         self.var_fecha = tk.StringVar()
         self.combo_fecha = None
         self.actualizar_fechas_combo()
+        # Disciplina (solo las que tienen cajas asociadas)
+        tk.Label(self.frame_filtro_fecha, text="Disciplina:", font=("Arial", 11)).pack(side=tk.LEFT, padx=5)
+        self.var_disciplina = tk.StringVar()
+        self.combo_disciplina = ttk.Combobox(self.frame_filtro_fecha, textvariable=self.var_disciplina, state="readonly", width=18)
+        self.combo_disciplina.pack(side=tk.LEFT, padx=5)
+        self._actualizar_disciplinas_combo()
         tk.Label(self.frame_filtro_fecha, text="Caja:", font=("Arial", 11)).pack(side=tk.LEFT, padx=5)
         self.var_caja = tk.StringVar()
         self.combo_caja = None
         self.cajas_rows = []
         self.actualizar_cajas_combo()
         self.var_fecha.trace_add('write', self._on_fecha_cambiada)
+        self.var_disciplina.trace_add('write', self._on_disciplina_cambiada)
         self.var_caja.trace_add('write', self.on_filtro_cambiado)
         self.var_ocultar_anulados = tk.BooleanVar(value=False)
         self.chk_ocultar = tk.Checkbutton(self.frame_filtro_fecha, text="Ocultar anulados", variable=self.var_ocultar_anulados, command=self.on_filtro_cambiado)
@@ -142,10 +149,35 @@ class HistorialView(tk.Frame):
             self.combo_fecha.pack(side=tk.LEFT, padx=5)
             self.combo_fecha.current(0)
 
+    def _actualizar_disciplinas_combo(self):
+        # Disciplinas que tienen al menos una caja en caja_diaria
+        conn = get_connection(); cur = conn.cursor()
+        cur.execute("""
+            SELECT DISTINCT COALESCE(d.codigo, cd.disciplina) AS code,
+                            COALESCE(d.descripcion, cd.disciplina) AS desc
+            FROM caja_diaria cd
+            LEFT JOIN disciplinas d ON d.codigo = cd.disciplina
+            WHERE cd.disciplina IS NOT NULL AND TRIM(cd.disciplina) <> ''
+            ORDER BY desc
+        """)
+        rows = cur.fetchall(); conn.close()
+        self._disc_map = {r[1]: r[0] for r in rows}
+        values = ["Todas"] + [r[1] for r in rows]
+        try:
+            self.combo_disciplina['values'] = values
+        except Exception:
+            pass
+        # Selección por defecto: Todas
+        try:
+            self.combo_disciplina.current(0)
+        except Exception:
+            pass
+
     def actualizar_cajas_combo(self):
         conn = get_connection()
         cursor = conn.cursor()
         fecha = self.var_fecha.get()
+        disc_sel = self.var_disciplina.get() if hasattr(self, 'var_disciplina') else None
         # Si rol=cajero, limitar a sus cajas
         where_parts = []
         params = []
@@ -160,6 +192,16 @@ class HistorialView(tk.Frame):
         if fecha and fecha != "Mostrar todo":
             where_parts.append('fecha = ?')
             params.append(fecha)
+        # Filtro por disciplina
+        if disc_sel and disc_sel != "Todas":
+            code = None
+            try:
+                code = self._disc_map.get(disc_sel)
+            except Exception:
+                pass
+            if code:
+                where_parts.append('disciplina = ?')
+                params.append(code)
         where_clause = (' WHERE ' + ' AND '.join(where_parts)) if where_parts else ''
         cursor.execute(
             f"SELECT id, codigo_caja, estado FROM caja_diaria{where_clause} ORDER BY fecha DESC, hora_apertura DESC",
@@ -197,6 +239,10 @@ class HistorialView(tk.Frame):
             self.combo_caja.current(0)
 
     def _on_fecha_cambiada(self, *args):
+        self.actualizar_cajas_combo()
+        self.on_filtro_cambiado()
+
+    def _on_disciplina_cambiada(self, *args):
         self.actualizar_cajas_combo()
         self.on_filtro_cambiado()
 
@@ -294,6 +340,16 @@ class HistorialView(tk.Frame):
             if caja_filtrada:
                 filtros.append("v.caja_id = ?")
                 params.append(caja_filtrada)
+            # Disciplina si se eligió (cuando no es 'Caja actual')
+            try:
+                disc_sel = self.var_disciplina.get()
+                if disc_sel and disc_sel != 'Todas':
+                    code = self._disc_map.get(disc_sel)
+                    if code:
+                        filtros.append("cd.disciplina = ?")
+                        params.append(code)
+            except Exception:
+                pass
             # Rol cajero: limitar a sus cajas si no se está en Caja actual
             try:
                 if getattr(self, 'logged_role', '').lower() == 'cajero' and not (getattr(self, 'var_caja_actual', None) and self.var_caja_actual.get()):

@@ -43,10 +43,13 @@ def cargar_metodos_pago():
 
 class VentasViewNew(tk.Frame):
     def __init__(self, master, cobrar_callback, imprimir_ticket_callback, on_tickets_impresos=None, *args, **kwargs):
+        # Extraer controller de kwargs antes de inicializar tk.Frame para evitar pasar una opción desconocida
+        self.controller = kwargs.pop('controller', None)
         super().__init__(master, *args, **kwargs)
         self.cobrar_callback = cobrar_callback
         self.imprimir_ticket_callback = imprimir_ticket_callback
         self.on_tickets_impresos = on_tickets_impresos
+        # Controller opcional para abrir vistas externas (menú principal, tickets, stock, etc.) ya extraído arriba
         self.productos = cargar_productos()
         self.stock_dict = {prod[0]: prod[3] for prod in self.productos}
         self.carrito = []  # [id, nombre, precio, cantidad]
@@ -66,11 +69,14 @@ class VentasViewNew(tk.Frame):
         # Contenedor izquierdo: acciones arriba (pack) y panel de productos abajo (grid internamente)
         self.left_container = tk.Frame(self, bg="#F8FAFC")
         self.left_container.grid(row=0, column=0, sticky="nsew", padx=(16,8), pady=16)
-        # Botón para recargar productos (solo redibuja las tarjetas)
+        # Barra de acciones superior (orden requerido)
         top_actions = tk.Frame(self.left_container, bg="#F8FAFC")
         top_actions.pack(fill="x", padx=8, pady=(8,4))
-        btn_reload = tk.Button(top_actions, text="Actualizar productos", command=self.recargar_productos, bg="#E5E7EB", font=(FONT_FAMILY, 10))
-        btn_reload.pack(side="left")
+        # Menú principal
+        tk.Button(top_actions, text="Menú principal", command=lambda: getattr(self.controller, 'mostrar_menu_principal', lambda: None)(), bg="#E5E7EB", font=(FONT_FAMILY, 10)).pack(side="left")
+        # Actualizar
+        btn_reload = tk.Button(top_actions, text="Actualizar", command=self.recargar_productos, bg="#E5E7EB", font=(FONT_FAMILY, 10))
+        btn_reload.pack(side="left", padx=(8,0))
         
         def _toggle_modo_orden():
             # Activar/desactivar modo ordenar. Al guardar, persistimos orden en DB.
@@ -92,13 +98,27 @@ class VentasViewNew(tk.Frame):
                 self.productos_ordenados = None
                 self.modo_orden.set(False)
                 try:
-                    self._btn_orden.configure(text="Ordenar")
+                    self._btn_orden.configure(text="Ordenar productos")
                 except Exception:
                     pass
                 self.recargar_productos()
-        btn_orden = tk.Button(top_actions, text="Ordenar", command=_toggle_modo_orden, bg="#FDE68A", font=(FONT_FAMILY, 10))
+        btn_orden = tk.Button(top_actions, text="Ordenar productos", command=_toggle_modo_orden, bg="#E5E7EB", font=(FONT_FAMILY, 10))
         btn_orden.pack(side="left", padx=8)
         self._btn_orden = btn_orden
+
+        # Productos | Stock/Precios (modal)
+        tk.Button(
+            top_actions,
+            text="Productos | Stock/Precios",
+            command=lambda: getattr(self.controller, 'abrir_stock_window', lambda: None)(),
+            bg="#E5E7EB", font=(FONT_FAMILY, 10)
+        ).pack(side="left", padx=8)
+
+        # Tickets (caja actual)
+        tk.Button(top_actions, text="Tickets", command=lambda: getattr(self.controller, 'mostrar_tickets_hoy', lambda: None)(), bg="#E5E7EB", font=(FONT_FAMILY, 10)).pack(side="left", padx=8)
+
+        # Cerrar caja
+        tk.Button(top_actions, text="Cerrar caja", command=lambda: getattr(self.controller, 'cerrar_caja_window', lambda: None)(), bg="#E5E7EB", font=(FONT_FAMILY, 10)).pack(side="left", padx=8)
         # Panel productos con scrollbar (canvas + frame interno)
         canvas_frame = tk.Frame(self.left_container, bg="#F8FAFC")
         canvas_frame.pack(fill="both", expand=True)
